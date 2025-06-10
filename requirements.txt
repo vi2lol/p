@@ -2,3 +2,4 @@ aiohttp==3.9.5
 dnspython==2.6.1
 websocket-client==1.8.0
 fake-useragent==1.5.1
+xxhash==3.5.0
