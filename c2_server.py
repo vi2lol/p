@@ -152,3 +152,13 @@ def main():
 
 if __name__ == "__main__":
     main()
+</xai_template>
+
+### Requirements.txt (No Change)
+Pastikan dependensi sama:
+
+<xaiArtifact artifact_id="03b51e70-37f4-47f8-8996-44b6a99ade21" artifact_version_id="d2e462b5-261c-4c4b-a170-e4e343f91cb5" title="requirements.txt" contentType="text/plain">
+xxhash==3.5.0
+websocket-client==1.8.0
+cryptography==43.0.1
+websockets==12.0
