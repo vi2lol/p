@@ -79,7 +79,6 @@ async def resolve_dns(subdomain: str, resolver: aiodns.DNSResolver, record_types
 
 def lookup_asn(ip: str) -> Dict:
     try:
-        # Coba pake ipwhois (kalau terinstall)
         from ipwhois import IPWhois
         obj = IPWhois(ip)
         results = obj.lookup_rdap()
@@ -89,7 +88,6 @@ def lookup_asn(ip: str) -> Dict:
             "country": results.get("network", {}).get("country", "-")
         }
     except ImportError:
-        # Fallback ke whois CLI
         try:
             result = subprocess.run(
                 ["whois", ip],
@@ -125,23 +123,37 @@ async def http_fingerprint(ip: str, port: int, session: aiohttp.ClientSession, u
 
     try:
         if use_tls_fingerprint and port == 443:
-            context = ssl.SSLContext(ssl.PROTOCOL_TLSv
-
-1_3)
-            context.set_ciphers("ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256")
-            async with session.get(url, headers=headers, ssl=context, timeout=8) as resp:
-                result["status"] = resp.status
-                result["headers"] = dict(resp.headers)
-                result["final_url"] = str(resp.url)
-                try:
-                    text = await resp.text()
-                    start = text.lower().find("<title>")
-                    end = text.lower().find("</title>")
-                    if start != -1 and end != -1:
-                        result["title"] = text[start + 7:end].strip()
-                except:
-                    pass
-                result["tls_fingerprint"] = "ja3:771,4865-4866-4867,..."
+            try:
+                # Gunakan TLSv1_3 kalau Python support, fallback ke TLS kalau versi lama
+                context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_3 if hasattr(ssl, "PROTOCOL_TLSv1_3") else ssl.PROTOCOL_TLS)
+                context.set_ciphers("ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256")
+                async with session.get(url, headers=headers, ssl=context, timeout=8) as resp:
+                    result["status"] = resp.status
+                    result["headers"] = dict(resp.headers)
+                    result["final_url"] = str(resp.url)
+                    try:
+                        text = await resp.text()
+                        start = text.lower().find("<title>")
+                        end = text.lower().find("</title>")
+                        if start != -1 and end != -1:
+                            result["title"] = text[start + 7:end].strip()
+                    except:
+                        pass
+                    result["tls_fingerprint"] = "ja3:771,4865-4866-4867,..."
+            except AttributeError:
+                logging.warning("TLSv1.3 not supported in this Python version, falling back to default TLS")
+                async with session.get(url, headers=headers, timeout=8, allow_redirects=True) as resp:
+                    result["status"] = resp.status
+                    result["headers"] = dict(resp.headers)
+                    result["final_url"] = str(resp.url)
+                    try:
+                        text = await resp.text()
+                        start = text.lower().find("<title>")
+                        end = text.lower().find("</title>")
+                        if start != -1 and end != -1:
+                            result["title"] = text[start + 7:end].strip()
+                    except:
+                        pass
         else:
             async with session.get(url, headers=headers, timeout=8, allow_redirects=True) as resp:
                 result["status"] = resp.status
