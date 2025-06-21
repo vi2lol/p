@@ -52,6 +52,13 @@ def is_cdn_ip(ip: str) -> Tuple[bool, str]:
     except ValueError:
         return False, ""
 
+def is_private_ip(ip: str) -> bool:
+    try:
+        ip_addr = ipaddress.ip_address(ip)
+        return ip_addr.is_private
+    except ValueError:
+        return False
+
 async def detect_wildcard(domain: str, resolver: aiodns.DNSResolver) -> Tuple[bool, set]:
     wildcard_ips = set()
     for random_sub in RANDOM_SUBDOMAINS:
@@ -78,6 +85,10 @@ async def resolve_dns(subdomain: str, resolver: aiodns.DNSResolver, record_types
     return results
 
 def lookup_asn(ip: str) -> Dict:
+    if is_private_ip(ip):
+        logging.info(f"Skipping ASN lookup for private IP: {ip}")
+        return {"asn": "-", "org": "Private IP", "country": "-"}
+    
     try:
         from ipwhois import IPWhois
         obj = IPWhois(ip)
@@ -88,26 +99,31 @@ def lookup_asn(ip: str) -> Dict:
             "country": results.get("network", {}).get("country", "-")
         }
     except ImportError:
-        try:
-            result = subprocess.run(
-                ["whois", ip],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            output = result.stdout.lower()
-            asn = org = country = "-"
-            for line in output.splitlines():
-                if "aut-num:" in line or "origin:" in line:
-                    asn = line.split(":")[1].strip()
-                elif "org-name:" in line or "organization:" in line:
-                    org = line.split(":")[1].strip()
-                elif "country:" in line:
-                    country = line.split(":")[1].strip()
-            return {"asn": asn, "org": org, "country": country}
-        except Exception as e:
-            logging.error(f"ASN lookup failed for {ip}: {e}")
-            return {"asn": "-", "org": "-", "country": "-"}
+        logging.warning("ipwhois not installed, falling back to whois CLI")
+    except Exception as e:
+        logging.error(f"RDAP lookup failed for {ip}: {e}")
+    
+    # Fallback ke whois CLI
+    try:
+        result = subprocess.run(
+            ["whois", ip],
+            capture_output=True,
+            text=True, 
+            timeout=10
+        )
+        output = result.stdout.lower()
+        asn = org = country = "-"
+        for line in output.splitlines():
+            if "aut-num:" in line or "origin:" in line:
+                asn = line.split(":")[1].strip()
+            elif "org-name:" in line or "organization:" in line:
+                org = line.split(":")[1].strip()
+            elif "country:" in line:
+                country = line.split(":")[1].strip()
+        return {"asn": asn, "org": org, "country": country}
+    except Exception as e:
+        logging.error(f"Whois CLI lookup failed for {ip}: {e}")
+        return {"asn": "-", "org": "-", "country": "-"}
 
 async def http_fingerprint(ip: str, port: int, session: aiohttp.ClientSession, use_tls_fingerprint: bool = False) -> Dict:
     url = f"http://{ip}:{port}" if port != 443 else f"https://{ip}"
@@ -124,8 +140,7 @@ async def http_fingerprint(ip: str, port: int, session: aiohttp.ClientSession, u
     try:
         if use_tls_fingerprint and port == 443:
             try:
-                # Gunakan TLSv1_3 kalau Python support, fallback ke TLS kalau versi lama
-                context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_3 if hasattr(ssl, "PROTOCOL_TLSv1_3") else ssl.PROTOCOL_TLS)
+                context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_3 if hasattr(ssl, "PROTOCOL_TLSv1_3") else ssl.PROTOCOL_TLS_CLIENT)
                 context.set_ciphers("ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256")
                 async with session.get(url, headers=headers, ssl=context, timeout=8) as resp:
                     result["status"] = resp.status
